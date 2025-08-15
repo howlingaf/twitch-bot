@@ -4,7 +4,6 @@ import re
 
 class Bot(commands.Bot):
     def __init__(self):
-        # Read bot token from dotfile
         try:
             with open('.hairyrug_', 'r') as f:
                 lines = f.read().strip().split('\n')
@@ -44,7 +43,6 @@ class Bot(commands.Bot):
 
     @commands.command(name='lt')
     async def leetcode_timer(self, ctx, url: str = None):
-        # Check if user has required privileges
         if not (ctx.author.is_mod or ctx.author.is_broadcaster or ctx.author.is_vip):
             return
         if not url:
@@ -59,6 +57,24 @@ class Bot(commands.Bot):
         await asyncio.sleep(1350)
         await ctx.send(f"⏰ Timer's up for '{problem_name}'!")
         self.current_problem = None
+
+    @commands.command(name='problem')
+    async def get_problem(self, ctx):
+        if self.current_problem is not None:
+            await ctx.send(self.current_problem)
+
+    @commands.command(name='spotify')
+    async def get_spotify(self, ctx):
+        await ctx.send('https://open.spotify.com/user/31s6zl5xs5kqjw7qbrqgslamrcfa')
+
+    @commands.command(name='goodreads')
+    async def get_goodreads(self, ctx):
+        await ctx.send('https://www.goodreads.com/howlingfantods_')
+
+    @commands.command(name='discord')
+    async def get_discord(self, ctx):
+        await ctx.send('https://discord.gg/tHjeDK8Cd7')
+
 
 if __name__ == "__main__":
     bot = Bot()
