@@ -6,5 +6,11 @@ dist/
 wheels/
 *.egg-info
 
+# Credentials
+.broadcaster
+.bot
+.spotify
+
+
 # Virtual environments
 .venv
