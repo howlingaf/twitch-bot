@@ -1,16 +1,5 @@
-# Python-generated files
-__pycache__/
-*.py[oc]
-build/
-dist/
-wheels/
-*.egg-info
-
-# Credentials
-.broadcaster
+.env
 .bot
-.spotify
-
-
-# Virtual environments
-.venv
+.broadcaster
+.spotify_cache
+__pycache__/
