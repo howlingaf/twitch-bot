@@ -35,8 +35,6 @@ class Bot(commands.Bot):
             initial_channels=[client_name],
         )
         self.current_problem = None
-        
-        # Initialize Spotify
         self.spotify = None
         self.init_spotify()
     
@@ -120,10 +118,21 @@ class Bot(commands.Bot):
     async def leetcode_timer(self, ctx, url: str = None, minutes: int = 30):
         if not (ctx.author.is_mod or ctx.author.is_broadcaster or ctx.author.is_vip):
             return
-        if not url:
-            await ctx.send("❌ Please provide a LeetCode problem URL! Usage: !lt <leetcode-url> [minutes]")
+
+        # Handle clear command
+        if url and url.lower() == "clear":
+            if hasattr(self, "lt_task") and self.lt_task and not self.lt_task.done():
+                self.lt_task.cancel()
+                await ctx.send("✅ Cleared current LeetCode timer!")
+            else:
+                await ctx.send("❌ No active LeetCode timer to clear!")
+            self.current_problem = None
             return
-        
+
+        if not url:
+            await ctx.send("❌ Please provide a LeetCode problem URL! Usage: !lt <leetcode-url> [minutes] or !lt clear")
+            return
+
         # Validate minutes (optional bounds check)
         if minutes <= 0:
             await ctx.send("❌ Timer duration must be greater than 0 minutes!")
@@ -131,16 +140,38 @@ class Bot(commands.Bot):
         if minutes > 180:  # Optional: cap at 3 hours
             await ctx.send("❌ Timer duration cannot exceed 180 minutes!")
             return
-        
+
         self.current_problem = url
-        
+
         def extract_problem_name(url):
             pattern = r'leetcode\.com/problems/([^/]+)'
             match = re.search(pattern, url)
             if match:
-                problem_name = match.group(1).replace('-', ' ').title()
-                return problem_name
+                return match.group(1).replace('-', ' ').title()
             return "LeetCode Problem"
+
+        problem_name = extract_problem_name(url)
+        print(f"🔒 Timer started by: {ctx.author.name} (Role: {'Broadcaster' if ctx.author.is_broadcaster else 'Mod' if ctx.author.is_mod else 'VIP'})")
+
+        await ctx.send(f"⏰ Starting {minutes}-minute timer for '{problem_name}'")
+
+        # Start background task for timer
+        self.lt_task = asyncio.create_task(self._run_lt_timer(ctx, problem_name, minutes))
+
+    async def _run_lt_timer(self, ctx, problem_name, minutes):
+        """Helper coroutine that runs the actual timer."""
+        try:
+            halfway_seconds = (minutes * 60) // 2
+            remaining_seconds = (minutes * 60) - halfway_seconds
+
+            await asyncio.sleep(halfway_seconds)
+            await ctx.send(f"⏰ Halfway through '{problem_name}' ({minutes//2 if minutes % 2 == 0 else f'{minutes/2:.1f}'} minutes remaining)")
+
+            await asyncio.sleep(remaining_seconds)
+            await ctx.send(f"⏰ Timer's up for '{problem_name}'!")
+            self.current_problem = None
+        except asyncio.CancelledError:
+            print(f"⚠️ Timer for '{problem_name}' was cancelled")
         
         problem_name = extract_problem_name(url)
         print(f"🔒 Timer started by: {ctx.author.name} (Role: {'Broadcaster' if ctx.author.is_broadcaster else 'Mod' if ctx.author.is_mod else 'VIP'})")
