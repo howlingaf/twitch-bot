@@ -12,18 +12,18 @@ from twitchio.ext import commands
 
 load_dotenv()
 
+# ---------------------------------------------------------
 # ---------------- OVERLAY WEBSOCKET SERVER ----------------
+# ---------------------------------------------------------
 
 overlay_clients = set()
 
 
 async def overlay_handler(websocket):
-    """Accept connections from OBS browser sources and keep track of them."""
     overlay_clients.add(websocket)
     print("📺 Overlay connected")
     try:
         async for _ in websocket:
-            # If you ever want messages back from overlay, handle them here.
             pass
     except Exception as e:
         print(f"[ERROR] overlay ws: {e}")
@@ -33,7 +33,6 @@ async def overlay_handler(websocket):
 
 
 async def overlay_broadcast(data: dict):
-    """Send a JSON message to all connected overlay clients."""
     if not overlay_clients:
         print("[INFO] No overlay clients connected for broadcast.")
         return
@@ -52,7 +51,9 @@ async def overlay_broadcast(data: dict):
         overlay_clients.discard(ws)
 
 
-# ---------------- BOT ----------------
+# ---------------------------------------------------------
+# ------------------------------ BOT -----------------------
+# ---------------------------------------------------------
 
 class Bot(commands.Bot):
     def __init__(self):
@@ -66,12 +67,12 @@ class Bot(commands.Bot):
 
         self.current_problem = None
         self.spotify = None
-        self.init_spotify()
-
         self.is_live = False
         self.ad_task = None
         self.lt_task = None
         self.ltlock_task = None
+
+        self.init_spotify()
 
     # ---------------- SPOTIFY INIT ----------------
     def init_spotify(self):
@@ -86,10 +87,29 @@ class Bot(commands.Bot):
             ))
             print('✅ Spotify API initialized')
         except Exception as e:
-            print(f'[ERROR] Spotify init: {e}')
+            print(f"[ERROR] Spotify init: {e}")
             self.spotify = None
 
-    # ---------------- STREAM STATUS CHECK ----------------
+    # -----------------------------------------------------
+    # ---------------- STREAM METADATA LOGGER -------------
+    # -----------------------------------------------------
+    async def log_stream_metadata(self):
+        async with aiohttp.ClientSession() as session:
+            headers = {
+                "Authorization": f"Bearer {os.getenv('ACCESS_TOKEN')}",
+                "Client-Id": os.getenv("CLIENT_ID")
+            }
+            url = f"https://api.twitch.tv/helix/streams?user_id={os.getenv('BROADCASTER_ID')}"
+
+            async with session.get(url, headers=headers) as resp:
+                data = await resp.json()
+                print("\n====== STREAM METADATA ======")
+                print(json.dumps(data, indent=2))
+                print("=============================\n")
+
+    # -----------------------------------------------------
+    # ---------------- STREAM LIVE CHECK ------------------
+    # -----------------------------------------------------
     async def is_stream_live(self):
         async with aiohttp.ClientSession() as session:
             headers = {
@@ -106,9 +126,14 @@ class Bot(commands.Bot):
                 data = await resp.json()
                 return len(data.get("data", [])) > 0
 
-    # ---------------- CURRENT CATEGORY ----------------
+    # -----------------------------------------------------
+    # ---------------- GET CURRENT CATEGORY ---------------
+    # -----------------------------------------------------
     async def get_current_category(self):
-        """Returns the game/category name of the LIVE stream."""
+        """
+        Twitch doesn't populate category immediately when stream first goes LIVE.
+        Retry 5 times over ~10 seconds.
+        """
         async with aiohttp.ClientSession() as session:
             headers = {
                 "Authorization": f"Bearer {os.getenv('ACCESS_TOKEN')}",
@@ -116,22 +141,35 @@ class Bot(commands.Bot):
             }
             url = f"https://api.twitch.tv/helix/streams?user_id={os.getenv('BROADCASTER_ID')}"
 
-            async with session.get(url, headers=headers) as resp:
-                if resp.status != 200:
-                    return None
+            for attempt in range(5):
+                async with session.get(url, headers=headers) as resp:
+                    if resp.status != 200:
+                        print(f"[ERROR] category fetch failed: {resp.status}")
+                        return None
 
-                data = await resp.json()
-                if not data["data"]:
-                    return None
+                    data = await resp.json()
 
-                return data["data"][0].get("game_name")
+                    if data.get("data"):
+                        game_name = data["data"][0].get("game_name")
+                        print(f"[Category attempt {attempt}] game_name = {repr(game_name)}")
 
-    # ---------------- DELETE LATEST VOD (Fitness Only) ----------------
+                        if game_name:  # populated!
+                            return game_name
+
+                await asyncio.sleep(2)
+
+        print("⚠️ Category never populated, returning None")
+        return None
+
+    # -----------------------------------------------------
+    # ---------------- DELETE LATEST VOD -------------------
+    # -----------------------------------------------------
     async def delete_latest_vod(self):
         category = await self.get_current_category()
+        print(f"🔍 VOD deletion check — category={repr(category)}")
 
         if category != "Fitness & Health":
-            print(f"Skipping VOD deletion — category = {category!r}")
+            print("Skipping VOD deletion — not Fitness & Health.")
             return
 
         print("💪 Category is Fitness & Health — deleting VOD…")
@@ -142,10 +180,10 @@ class Bot(commands.Bot):
                 "Client-Id": os.getenv("CLIENT_ID")
             }
 
-            # 1. Fetch latest VOD
+            # Get latest archive VOD
             url = (
-                f"https://api.twitch.tv/helix/videos"
-                f"?user_id={os.getenv('BROADCASTER_ID')}&first=1&type=archive"
+                f"https://api.twitch.tv/helix/videos?"
+                f"user_id={os.getenv('BROADCASTER_ID')}&first=1&type=archive"
             )
 
             async with session.get(url, headers=headers) as resp:
@@ -156,52 +194,62 @@ class Bot(commands.Bot):
 
                 vod_id = data["data"][0]["id"]
 
-            # 2. Delete it
             delete_url = f"https://api.twitch.tv/helix/videos?id={vod_id}"
             async with session.delete(delete_url, headers=headers) as delete_resp:
                 print(f"🗑 Deleted VOD {vod_id} (status={delete_resp.status})")
 
+    # -----------------------------------------------------
     # ---------------- LIVE STATUS MONITOR ----------------
+    # -----------------------------------------------------
     async def monitor_live_status(self):
         while True:
             live = await self.is_stream_live()
 
-            # Stream just went live
             if live and not self.is_live:
                 print("🎉 Stream just went LIVE!")
                 self.is_live = True
+
+                # Log all metadata
+                await self.log_stream_metadata()
+
+                # OPTIONAL: Run ads instantly when going live
+                # asyncio.create_task(self.start_ad_immediately())
+
                 self.ad_task = asyncio.create_task(self._run_ad_loop())
 
-            # Stream just went offline
-            if not live and self.is_live:
+            elif not live and self.is_live:
                 print("🔻 Stream went OFFLINE")
                 self.is_live = False
 
-                # Delete VOD if fitness category
                 await self.delete_latest_vod()
 
-                # Stop ad loop
                 if self.ad_task:
                     self.ad_task.cancel()
                     self.ad_task = None
 
-            await asyncio.sleep(20)  # check every 20 seconds
+            await asyncio.sleep(20)
 
-    # ---------------- BOT READY ----------------
+    # -----------------------------------------------------
+    # ---------------- BOT READY EVENT --------------------
+    # -----------------------------------------------------
     async def event_ready(self):
         print(f'✅ Bot ready | {self.nick}')
         asyncio.create_task(self.monitor_live_status())
 
-    # ---------------- CHAT HANDLING ----------------
+    # -----------------------------------------------------
+    # ---------------- CHAT MESSAGE HANDLER ---------------
+    # -----------------------------------------------------
     async def event_message(self, message):
         if message.echo:
             return
         await self.handle_commands(message)
 
-    # ---------------- AD LOOP ----------------
+    # -----------------------------------------------------
+    # ---------------- AD LOOP ----------------------------
+    # -----------------------------------------------------
     async def _run_ad_loop(self):
-        channel = self.connected_channels[0]
         print("▶️ Ad loop started.")
+        channel = self.connected_channels[0]
 
         while self.is_live:
             try:
@@ -211,7 +259,6 @@ class Bot(commands.Bot):
                     break
 
                 await channel.send("📢 Ad in 1 minute!")
-
                 await asyncio.sleep(60)
 
                 if not self.is_live:
@@ -232,7 +279,6 @@ class Bot(commands.Bot):
                         headers=headers,
                         json=payload
                     ) as resp:
-
                         if resp.status != 200:
                             print(f"❌ Failed to start ad: {await resp.text()}")
                             break
@@ -254,12 +300,16 @@ class Bot(commands.Bot):
 
         print("⛔ Ad loop stopped (stream offline).")
 
-    # ---------------- HELPER: PROBLEM NAME ----------------
+    # -----------------------------------------------------
+    # ---------------- UTILITY HELPERS --------------------
+    # -----------------------------------------------------
     def _extract_problem_name(self, url: str) -> str:
         m = re.search(r'leetcode\.com/problems/([^/]+)', url)
         return m.group(1).replace('-', ' ').title() if m else "LeetCode Problem"
 
-    # ---------------- LEETCODE TIMER ----------------
+    # -----------------------------------------------------
+    # ---------------- LT TIMER COMMANDS ------------------
+    # -----------------------------------------------------
     @commands.command(name='lt')
     async def leetcode_timer(self, ctx, url: str = None, minutes: int = 30):
         try:
@@ -282,7 +332,7 @@ class Bot(commands.Bot):
             self.lt_task = asyncio.create_task(self._run_lt_timer(ctx, problem_name, minutes))
 
         except Exception as e:
-            print(f'[ERROR] lt command: {e}')
+            print(f"[ERROR] lt command: {e}")
 
     async def _run_lt_timer(self, ctx, problem_name, minutes):
         try:
@@ -298,21 +348,17 @@ class Bot(commands.Bot):
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            print(f'[ERROR] LT timer loop: {e}')
+            print(f"[ERROR] LT timer loop: {e}")
 
-    # ---------------- LEETCODE LOCK-IN TIMER + OVERLAY ----------------
+    # -----------------------------------------------------
+    # ---------------- LOCK-IN + OVERLAY TIMER ------------
+    # -----------------------------------------------------
     @commands.command(name='ltlockin')
     async def leetcode_lockin(self, ctx, url: str = None, minutes: int = 30):
-        """
-        Usage:
-          !ltlockin <url> <minutes>
-          !ltlockin clear
-        """
         try:
             if not (ctx.author.is_mod or ctx.author.is_broadcaster or ctx.author.is_vip):
                 return
 
-            # Clear/cancel lock-in
             if url and url.lower() == "clear":
                 if self.ltlock_task and not self.ltlock_task.done():
                     self.ltlock_task.cancel()
@@ -328,37 +374,32 @@ class Bot(commands.Bot):
 
             await ctx.send(f"🔒 LOCKED IN — {minutes} minutes for '{problem_name}'")
 
-            # Tell overlay to show + start countdown
             await overlay_broadcast({
                 "command": "start",
                 "duration": minutes * 60,
                 "label": "LOCKED IN"
             })
 
-            # Timer task
             self.ltlock_task = asyncio.create_task(
                 self._run_ltlock_timer(ctx, problem_name, minutes)
             )
 
         except Exception as e:
-            print(f'[ERROR] ltlockin command: {e}')
+            print(f"[ERROR] ltlockin command: {e}")
 
     async def _run_ltlock_timer(self, ctx, problem_name, minutes):
         try:
-            total_seconds = minutes * 60
-            await asyncio.sleep(total_seconds)
-
-            # Timer finished
-            print("⏰ LOCK-IN timer is up!")
+            await asyncio.sleep(minutes * 60)
             await overlay_broadcast({"command": "stop"})
             await ctx.send(f"⏰ Time's up for '{problem_name}' — LOCK-IN over!")
-
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            print(f'[ERROR] LTLOCK timer loop: {e}')
+            print(f"[ERROR] LTLOCK timer loop: {e}")
 
-    # ---------------- DAILY COMMAND ----------------
+    # -----------------------------------------------------
+    # ---------------- OTHER COMMANDS ---------------------
+    # -----------------------------------------------------
     @commands.command(name='daily')
     async def daily_leetcode(self, ctx):
         try:
@@ -375,9 +416,8 @@ class Bot(commands.Bot):
                     await ctx.send(f"📅 Daily: {title} ({diff}) | {link}")
 
         except Exception as e:
-            print(f'[ERROR] daily command: {e}')
+            print(f"[ERROR] daily command: {e}")
 
-    # ---------------- SONG COMMAND ----------------
     @commands.command(name='song')
     async def current_song(self, ctx):
         try:
@@ -396,9 +436,8 @@ class Bot(commands.Bot):
             await ctx.send(f"🎵 {song} — {artists} | {url}")
 
         except Exception as e:
-            print(f'[ERROR] song command: {e}')
+            print(f"[ERROR] song command: {e}")
 
-    # ---------------- PROBLEM COMMAND ----------------
     @commands.command(name='problem')
     async def get_problem(self, ctx, problem_id: str = None):
         try:
@@ -416,9 +455,8 @@ class Bot(commands.Bot):
                     )
 
         except Exception as e:
-            print(f'[ERROR] problem command: {e}')
+            print(f"[ERROR] problem command: {e}")
 
-    # ---------------- LINKS ----------------
     @commands.command(name='spotify')
     async def get_spotify(self, ctx):
         await ctx.send('https://open.spotify.com/user/31s6zl5xs5kqjw7qbrqgslamrcfa')
@@ -432,7 +470,9 @@ class Bot(commands.Bot):
         await ctx.send('https://discord.gg/tHjeDK8Cd7')
 
 
-# ---------------- MAIN ----------------
+# ---------------------------------------------------------
+# ------------------------------ MAIN ----------------------
+# ---------------------------------------------------------
 
 async def main():
     bot = Bot()
