@@ -1,14 +1,58 @@
 import asyncio
+import json
 import os
 import re
 
 import aiohttp
 import spotipy
+import websockets
 from dotenv import load_dotenv
 from spotipy.oauth2 import SpotifyOAuth
 from twitchio.ext import commands
 
 load_dotenv()
+
+# ---------------- OVERLAY WEBSOCKET SERVER ----------------
+
+overlay_clients = set()
+
+
+async def overlay_handler(websocket):
+    """Accept connections from OBS browser sources and keep track of them."""
+    overlay_clients.add(websocket)
+    print("📺 Overlay connected")
+    try:
+        async for _ in websocket:
+            # If you ever want messages back from overlay, handle them here.
+            pass
+    except Exception as e:
+        print(f"[ERROR] overlay ws: {e}")
+    finally:
+        overlay_clients.discard(websocket)
+        print("📺 Overlay disconnected")
+
+
+async def overlay_broadcast(data: dict):
+    """Send a JSON message to all connected overlay clients."""
+    if not overlay_clients:
+        print("[INFO] No overlay clients connected for broadcast.")
+        return
+
+    message = json.dumps(data)
+    dead = []
+
+    for ws in overlay_clients:
+        try:
+            await ws.send(message)
+        except Exception as e:
+            print(f"[ERROR] sending to overlay client: {e}")
+            dead.append(ws)
+
+    for ws in dead:
+        overlay_clients.discard(ws)
+
+
+# ---------------- BOT ----------------
 
 class Bot(commands.Bot):
     def __init__(self):
@@ -26,7 +70,8 @@ class Bot(commands.Bot):
 
         self.is_live = False
         self.ad_task = None
-
+        self.lt_task = None
+        self.ltlock_task = None
 
     # ---------------- SPOTIFY INIT ----------------
     def init_spotify(self):
@@ -44,7 +89,6 @@ class Bot(commands.Bot):
             print(f'[ERROR] Spotify init: {e}')
             self.spotify = None
 
-
     # ---------------- STREAM STATUS CHECK ----------------
     async def is_stream_live(self):
         async with aiohttp.ClientSession() as session:
@@ -61,7 +105,6 @@ class Bot(commands.Bot):
 
                 data = await resp.json()
                 return len(data.get("data", [])) > 0
-
 
     # ---------------- CURRENT CATEGORY ----------------
     async def get_current_category(self):
@@ -82,7 +125,6 @@ class Bot(commands.Bot):
                     return None
 
                 return data["data"][0].get("game_name")
-
 
     # ---------------- DELETE LATEST VOD (Fitness Only) ----------------
     async def delete_latest_vod(self):
@@ -119,7 +161,6 @@ class Bot(commands.Bot):
             async with session.delete(delete_url, headers=headers) as delete_resp:
                 print(f"🗑 Deleted VOD {vod_id} (status={delete_resp.status})")
 
-
     # ---------------- LIVE STATUS MONITOR ----------------
     async def monitor_live_status(self):
         while True:
@@ -146,19 +187,16 @@ class Bot(commands.Bot):
 
             await asyncio.sleep(20)  # check every 20 seconds
 
-
     # ---------------- BOT READY ----------------
     async def event_ready(self):
         print(f'✅ Bot ready | {self.nick}')
         asyncio.create_task(self.monitor_live_status())
-
 
     # ---------------- CHAT HANDLING ----------------
     async def event_message(self, message):
         if message.echo:
             return
         await self.handle_commands(message)
-
 
     # ---------------- AD LOOP ----------------
     async def _run_ad_loop(self):
@@ -216,6 +254,10 @@ class Bot(commands.Bot):
 
         print("⛔ Ad loop stopped (stream offline).")
 
+    # ---------------- HELPER: PROBLEM NAME ----------------
+    def _extract_problem_name(self, url: str) -> str:
+        m = re.search(r'leetcode\.com/problems/([^/]+)', url)
+        return m.group(1).replace('-', ' ').title() if m else "LeetCode Problem"
 
     # ---------------- LEETCODE TIMER ----------------
     @commands.command(name='lt')
@@ -225,7 +267,7 @@ class Bot(commands.Bot):
                 return
 
             if url and url.lower() == "clear":
-                if hasattr(self, "lt_task") and self.lt_task and not self.lt_task.done():
+                if self.lt_task and not self.lt_task.done():
                     self.lt_task.cancel()
                 self.current_problem = None
                 return
@@ -234,19 +276,13 @@ class Bot(commands.Bot):
                 return
 
             self.current_problem = url
-
-            def extract_problem_name(url):
-                m = re.search(r'leetcode\.com/problems/([^/]+)', url)
-                return m.group(1).replace('-', ' ').title() if m else "LeetCode Problem"
-
-            problem_name = extract_problem_name(url)
+            problem_name = self._extract_problem_name(url)
             await ctx.send(f"⏰ {minutes}-minute timer started for '{problem_name}'")
 
             self.lt_task = asyncio.create_task(self._run_lt_timer(ctx, problem_name, minutes))
 
         except Exception as e:
             print(f'[ERROR] lt command: {e}')
-
 
     async def _run_lt_timer(self, ctx, problem_name, minutes):
         try:
@@ -264,6 +300,63 @@ class Bot(commands.Bot):
         except Exception as e:
             print(f'[ERROR] LT timer loop: {e}')
 
+    # ---------------- LEETCODE LOCK-IN TIMER + OVERLAY ----------------
+    @commands.command(name='ltlockin')
+    async def leetcode_lockin(self, ctx, url: str = None, minutes: int = 30):
+        """
+        Usage:
+          !ltlockin <url> <minutes>
+          !ltlockin clear
+        """
+        try:
+            if not (ctx.author.is_mod or ctx.author.is_broadcaster or ctx.author.is_vip):
+                return
+
+            # Clear/cancel lock-in
+            if url and url.lower() == "clear":
+                if self.ltlock_task and not self.ltlock_task.done():
+                    self.ltlock_task.cancel()
+                await overlay_broadcast({"command": "stop"})
+                print("🛑 LOCK-IN cancelled.")
+                return
+
+            if not url or minutes <= 0 or minutes > 180:
+                return
+
+            self.current_problem = url
+            problem_name = self._extract_problem_name(url)
+
+            await ctx.send(f"🔒 LOCKED IN — {minutes} minutes for '{problem_name}'")
+
+            # Tell overlay to show + start countdown
+            await overlay_broadcast({
+                "command": "start",
+                "duration": minutes * 60,
+                "label": "LOCKED IN"
+            })
+
+            # Timer task
+            self.ltlock_task = asyncio.create_task(
+                self._run_ltlock_timer(ctx, problem_name, minutes)
+            )
+
+        except Exception as e:
+            print(f'[ERROR] ltlockin command: {e}')
+
+    async def _run_ltlock_timer(self, ctx, problem_name, minutes):
+        try:
+            total_seconds = minutes * 60
+            await asyncio.sleep(total_seconds)
+
+            # Timer finished
+            print("⏰ LOCK-IN timer is up!")
+            await overlay_broadcast({"command": "stop"})
+            await ctx.send(f"⏰ Time's up for '{problem_name}' — LOCK-IN over!")
+
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            print(f'[ERROR] LTLOCK timer loop: {e}')
 
     # ---------------- DAILY COMMAND ----------------
     @commands.command(name='daily')
@@ -283,7 +376,6 @@ class Bot(commands.Bot):
 
         except Exception as e:
             print(f'[ERROR] daily command: {e}')
-
 
     # ---------------- SONG COMMAND ----------------
     @commands.command(name='song')
@@ -306,7 +398,6 @@ class Bot(commands.Bot):
         except Exception as e:
             print(f'[ERROR] song command: {e}')
 
-
     # ---------------- PROBLEM COMMAND ----------------
     @commands.command(name='problem')
     async def get_problem(self, ctx, problem_id: str = None):
@@ -327,7 +418,6 @@ class Bot(commands.Bot):
         except Exception as e:
             print(f'[ERROR] problem command: {e}')
 
-
     # ---------------- LINKS ----------------
     @commands.command(name='spotify')
     async def get_spotify(self, ctx):
@@ -343,6 +433,22 @@ class Bot(commands.Bot):
 
 
 # ---------------- MAIN ----------------
-if __name__ == "__main__":
+
+async def main():
     bot = Bot()
-    bot.run()
+
+    overlay_host = "0.0.0.0"
+    overlay_port = int(os.getenv("OVERLAY_PORT", "8765"))
+
+    server = await websockets.serve(overlay_handler, overlay_host, overlay_port)
+    print(f"🔌 Overlay WebSocket server listening on ws://{overlay_host}:{overlay_port}")
+
+    try:
+        await bot.start()
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
