@@ -1,5 +1,6 @@
 .env
-.bot
-.broadcaster
 .spotify_cache
 __pycache__/
+.tio.tokens.json
+.venv
+uv.lock

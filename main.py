@@ -1,43 +1,34 @@
 import asyncio
-from twitchio.ext import commands
-import re
-import spotipy
-from spotipy.oauth2 import SpotifyOAuth
 import os
-from dotenv import load_dotenv
+import re
+
 import aiohttp
+import spotipy
+from dotenv import load_dotenv
+from spotipy.oauth2 import SpotifyOAuth
+from twitchio.ext import commands
 
 load_dotenv()
 
 class Bot(commands.Bot):
     def __init__(self):
-        try:
-            with open('.bot', 'r') as f:
-                lines = f.read().strip().split('\n')
-                bot_name = lines[0].strip()
-                bot_token = lines[1].strip()
-            with open('.broadcaster', 'r') as f:
-                lines = f.read().strip().split('\n')
-                client_name = lines[0].strip()
-                client_id = lines[3].strip()
-        except FileNotFoundError:
-            print('❌ bot file not found!')
-            exit(1)
-        except IndexError:
-            print('❌ bot file is empty or malformed!')
-            exit(1)
-        
         super().__init__(
-            token=f'oauth:{bot_token}',
-            client_id=f'{client_id}',
-            nick=f'{bot_name}',
+            token=os.getenv('BOT_OAUTH_TOKEN'),
+            client_id=os.getenv('CLIENT_ID'),
+            nick="hairyrug_",
             prefix='!',
-            initial_channels=[client_name],
+            initial_channels=["howlingfantods_"],
         )
+
         self.current_problem = None
         self.spotify = None
         self.init_spotify()
-    
+
+        self.is_live = False
+        self.ad_task = None
+
+
+    # ---------------- SPOTIFY INIT ----------------
     def init_spotify(self):
         try:
             scope = "user-read-currently-playing user-read-playback-state"
@@ -50,193 +41,294 @@ class Bot(commands.Bot):
             ))
             print('✅ Spotify API initialized')
         except Exception as e:
-            print(f'❌ Failed to initialize Spotify: {e}')
+            print(f'[ERROR] Spotify init: {e}')
             self.spotify = None
 
+
+    # ---------------- STREAM STATUS CHECK ----------------
+    async def is_stream_live(self):
+        async with aiohttp.ClientSession() as session:
+            headers = {
+                "Authorization": f"Bearer {os.getenv('ACCESS_TOKEN')}",
+                "Client-Id": os.getenv("CLIENT_ID")
+            }
+            url = f"https://api.twitch.tv/helix/streams?user_id={os.getenv('BROADCASTER_ID')}"
+
+            async with session.get(url, headers=headers) as resp:
+                if resp.status != 200:
+                    print(f"[ERROR] stream status check failed: {resp.status}")
+                    return False
+
+                data = await resp.json()
+                return len(data.get("data", [])) > 0
+
+
+    # ---------------- CURRENT CATEGORY ----------------
+    async def get_current_category(self):
+        """Returns the game/category name of the LIVE stream."""
+        async with aiohttp.ClientSession() as session:
+            headers = {
+                "Authorization": f"Bearer {os.getenv('ACCESS_TOKEN')}",
+                "Client-Id": os.getenv("CLIENT_ID")
+            }
+            url = f"https://api.twitch.tv/helix/streams?user_id={os.getenv('BROADCASTER_ID')}"
+
+            async with session.get(url, headers=headers) as resp:
+                if resp.status != 200:
+                    return None
+
+                data = await resp.json()
+                if not data["data"]:
+                    return None
+
+                return data["data"][0].get("game_name")
+
+
+    # ---------------- DELETE LATEST VOD (Fitness Only) ----------------
+    async def delete_latest_vod(self):
+        category = await self.get_current_category()
+
+        if category != "Fitness & Health":
+            print(f"Skipping VOD deletion — category = {category!r}")
+            return
+
+        print("💪 Category is Fitness & Health — deleting VOD…")
+
+        async with aiohttp.ClientSession() as session:
+            headers = {
+                "Authorization": f"Bearer {os.getenv('ACCESS_TOKEN')}",
+                "Client-Id": os.getenv("CLIENT_ID")
+            }
+
+            # 1. Fetch latest VOD
+            url = (
+                f"https://api.twitch.tv/helix/videos"
+                f"?user_id={os.getenv('BROADCASTER_ID')}&first=1&type=archive"
+            )
+
+            async with session.get(url, headers=headers) as resp:
+                data = await resp.json()
+                if not data["data"]:
+                    print("No VOD found to delete.")
+                    return
+
+                vod_id = data["data"][0]["id"]
+
+            # 2. Delete it
+            delete_url = f"https://api.twitch.tv/helix/videos?id={vod_id}"
+            async with session.delete(delete_url, headers=headers) as delete_resp:
+                print(f"🗑 Deleted VOD {vod_id} (status={delete_resp.status})")
+
+
+    # ---------------- LIVE STATUS MONITOR ----------------
+    async def monitor_live_status(self):
+        while True:
+            live = await self.is_stream_live()
+
+            # Stream just went live
+            if live and not self.is_live:
+                print("🎉 Stream just went LIVE!")
+                self.is_live = True
+                self.ad_task = asyncio.create_task(self._run_ad_loop())
+
+            # Stream just went offline
+            if not live and self.is_live:
+                print("🔻 Stream went OFFLINE")
+                self.is_live = False
+
+                # Delete VOD if fitness category
+                await self.delete_latest_vod()
+
+                # Stop ad loop
+                if self.ad_task:
+                    self.ad_task.cancel()
+                    self.ad_task = None
+
+            await asyncio.sleep(20)  # check every 20 seconds
+
+
+    # ---------------- BOT READY ----------------
     async def event_ready(self):
         print(f'✅ Bot ready | {self.nick}')
+        asyncio.create_task(self.monitor_live_status())
 
+
+    # ---------------- CHAT HANDLING ----------------
     async def event_message(self, message):
         if message.echo:
             return
-        print(f'💬 {message.author.name}: {message.content}')
         await self.handle_commands(message)
 
+
+    # ---------------- AD LOOP ----------------
+    async def _run_ad_loop(self):
+        channel = self.connected_channels[0]
+        print("▶️ Ad loop started.")
+
+        while self.is_live:
+            try:
+                await asyncio.sleep(59 * 60)
+
+                if not self.is_live:
+                    break
+
+                await channel.send("📢 Ad in 1 minute!")
+
+                await asyncio.sleep(60)
+
+                if not self.is_live:
+                    break
+
+                async with aiohttp.ClientSession() as session:
+                    headers = {
+                        "Authorization": f"Bearer {os.getenv('ACCESS_TOKEN')}",
+                        "Client-Id": os.getenv("CLIENT_ID"),
+                    }
+                    payload = {
+                        "broadcaster_id": os.getenv("BROADCASTER_ID"),
+                        "length": 180
+                    }
+
+                    async with session.post(
+                        "https://api.twitch.tv/helix/channels/commercial",
+                        headers=headers,
+                        json=payload
+                    ) as resp:
+
+                        if resp.status != 200:
+                            print(f"❌ Failed to start ad: {await resp.text()}")
+                            break
+
+                        await channel.send("📺 Ad starting (3 minutes).")
+
+                await asyncio.sleep(180)
+
+                if not self.is_live:
+                    break
+
+                await channel.send("✅ Ad break over!")
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                print(f"❌ Fatal error in ad loop: {e}")
+                break
+
+        print("⛔ Ad loop stopped (stream offline).")
+
+
+    # ---------------- LEETCODE TIMER ----------------
+    @commands.command(name='lt')
+    async def leetcode_timer(self, ctx, url: str = None, minutes: int = 30):
+        try:
+            if not (ctx.author.is_mod or ctx.author.is_broadcaster or ctx.author.is_vip):
+                return
+
+            if url and url.lower() == "clear":
+                if hasattr(self, "lt_task") and self.lt_task and not self.lt_task.done():
+                    self.lt_task.cancel()
+                self.current_problem = None
+                return
+
+            if not url or minutes <= 0 or minutes > 180:
+                return
+
+            self.current_problem = url
+
+            def extract_problem_name(url):
+                m = re.search(r'leetcode\.com/problems/([^/]+)', url)
+                return m.group(1).replace('-', ' ').title() if m else "LeetCode Problem"
+
+            problem_name = extract_problem_name(url)
+            await ctx.send(f"⏰ {minutes}-minute timer started for '{problem_name}'")
+
+            self.lt_task = asyncio.create_task(self._run_lt_timer(ctx, problem_name, minutes))
+
+        except Exception as e:
+            print(f'[ERROR] lt command: {e}')
+
+
+    async def _run_lt_timer(self, ctx, problem_name, minutes):
+        try:
+            halfway = (minutes * 60) // 2
+            final = minutes * 60 - halfway
+
+            await asyncio.sleep(halfway)
+            await ctx.send(f"⏰ Halfway done with '{problem_name}'")
+
+            await asyncio.sleep(final)
+            await ctx.send(f"⏰ Time's up for '{problem_name}'")
+
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            print(f'[ERROR] LT timer loop: {e}')
+
+
+    # ---------------- DAILY COMMAND ----------------
     @commands.command(name='daily')
     async def daily_leetcode(self, ctx):
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get('https://leetcode-api-pied.vercel.app/daily') as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        
-                        # Extract information from the response
-                        title = data['question']['title']
-                        difficulty = data['question']['difficulty']
-                        link_suffix = data['link']
-                        full_link = f"https://leetcode.com{link_suffix}"
-                        
-                        # Send the daily challenge info
-                        await ctx.send(f"📅 Today's LeetCode Daily: {title} ({difficulty}) | {full_link}")
-                    else:
-                        await ctx.send("❌ Failed to fetch today's LeetCode daily challenge")
-        except Exception as e:
-            print(f"Error fetching daily LeetCode: {e}")
-            await ctx.send("❌ Error retrieving today's LeetCode daily challenge")
+                async with session.get('https://leetcode-api-pied.vercel.app/daily') as resp:
+                    if resp.status != 200:
+                        return
 
+                    data = await resp.json()
+                    title = data['question']['title']
+                    diff = data['question']['difficulty']
+                    link = f"https://leetcode.com{data['link']}"
+
+                    await ctx.send(f"📅 Daily: {title} ({diff}) | {link}")
+
+        except Exception as e:
+            print(f'[ERROR] daily command: {e}')
+
+
+    # ---------------- SONG COMMAND ----------------
     @commands.command(name='song')
     async def current_song(self, ctx):
-        if not self.spotify:
-            await ctx.send("❌ Spotify integration not available!")
-            return
-        
         try:
-            current_track = self.spotify.current_playback()
-            
-            if not current_track or not current_track['is_playing']:
-                await ctx.send("🎵 No song currently playing on Spotify")
+            if not self.spotify:
                 return
-            
-            track = current_track['item']
-            if track:
-                song_name = track['name']
-                artists = ', '.join([artist['name'] for artist in track['artists']])
-                album = track['album']['name']
-                
-                # Get the Spotify URL
-                spotify_url = track['external_urls']['spotify']
-                
-                await ctx.send(f"🎵 Now playing: {song_name} by {artists} | {spotify_url}")
-            else:
-                await ctx.send("🎵 No track information available")
-                
+
+            data = self.spotify.current_playback()
+            if not data or not data.get("is_playing"):
+                return
+
+            item = data["item"]
+            song = item["name"]
+            artists = ", ".join(a["name"] for a in item["artists"])
+            url = item["external_urls"]["spotify"]
+
+            await ctx.send(f"🎵 {song} — {artists} | {url}")
+
         except Exception as e:
-            print(f"Error getting current song: {e}")
-            await ctx.send("❌ Failed to get current song from Spotify")
+            print(f'[ERROR] song command: {e}')
 
-    @commands.command(name='lt')
-    async def leetcode_timer(self, ctx, url: str = None, minutes: int = 30):
-        if not (ctx.author.is_mod or ctx.author.is_broadcaster or ctx.author.is_vip):
-            return
 
-        # Handle clear command
-        if url and url.lower() == "clear":
-            if hasattr(self, "lt_task") and self.lt_task and not self.lt_task.done():
-                self.lt_task.cancel()
-                await ctx.send("✅ Cleared current LeetCode timer!")
-            else:
-                await ctx.send("❌ No active LeetCode timer to clear!")
-            self.current_problem = None
-            return
-
-        if not url:
-            await ctx.send("❌ Please provide a LeetCode problem URL! Usage: !lt <leetcode-url> [minutes] or !lt clear")
-            return
-
-        # Validate minutes (optional bounds check)
-        if minutes <= 0:
-            await ctx.send("❌ Timer duration must be greater than 0 minutes!")
-            return
-        if minutes > 180:  # Optional: cap at 3 hours
-            await ctx.send("❌ Timer duration cannot exceed 180 minutes!")
-            return
-
-        self.current_problem = url
-
-        def extract_problem_name(url):
-            pattern = r'leetcode\.com/problems/([^/]+)'
-            match = re.search(pattern, url)
-            if match:
-                return match.group(1).replace('-', ' ').title()
-            return "LeetCode Problem"
-
-        problem_name = extract_problem_name(url)
-        print(f"🔒 Timer started by: {ctx.author.name} (Role: {'Broadcaster' if ctx.author.is_broadcaster else 'Mod' if ctx.author.is_mod else 'VIP'})")
-
-        await ctx.send(f"⏰ Starting {minutes}-minute timer for '{problem_name}'")
-
-        # Start background task for timer
-        self.lt_task = asyncio.create_task(self._run_lt_timer(ctx, problem_name, minutes))
-
-    async def _run_lt_timer(self, ctx, problem_name, minutes):
-        """Helper coroutine that runs the actual timer."""
-        try:
-            halfway_seconds = (minutes * 60) // 2
-            remaining_seconds = (minutes * 60) - halfway_seconds
-
-            await asyncio.sleep(halfway_seconds)
-            await ctx.send(f"⏰ Halfway through '{problem_name}' ({minutes//2 if minutes % 2 == 0 else f'{minutes/2:.1f}'} minutes remaining)")
-
-            await asyncio.sleep(remaining_seconds)
-            await ctx.send(f"⏰ Timer's up for '{problem_name}'!")
-            self.current_problem = None
-        except asyncio.CancelledError:
-            print(f"⚠️ Timer for '{problem_name}' was cancelled")
-        
-        problem_name = extract_problem_name(url)
-        print(f"🔒 Timer started by: {ctx.author.name} (Role: {'Broadcaster' if ctx.author.is_broadcaster else 'Mod' if ctx.author.is_mod else 'VIP'})")
-        
-        await ctx.send(f"⏰ Starting {minutes}-minute timer for '{problem_name}'")
-        
-        # Calculate halfway point
-        halfway_seconds = (minutes * 60) // 2
-        remaining_seconds = (minutes * 60) - halfway_seconds
-        
-        await asyncio.sleep(halfway_seconds)
-        await ctx.send(f"⏰ Halfway through '{problem_name}' ({minutes//2 if minutes % 2 == 0 else f'{minutes/2:.1f}'} minutes remaining)")
-        
-        await asyncio.sleep(remaining_seconds)
-        await ctx.send(f"⏰ Timer's up for '{problem_name}'!")
-
+    # ---------------- PROBLEM COMMAND ----------------
     @commands.command(name='problem')
     async def get_problem(self, ctx, problem_id: str = None):
-        # If no problem_id is provided, return the current problem being worked on
-        if problem_id is None:
-            if self.current_problem is not None:
-                await ctx.send(self.current_problem)
-            else:
-                await ctx.send("Howlingfantods_ currently isn't working on a problem!")
-            return
-        
-        # If problem_id is provided, fetch the specific problem from the API
         try:
+            if problem_id is None:
+                return
+
             async with aiohttp.ClientSession() as session:
-                async with session.get(f'https://leetcode-api-pied.vercel.app/problem/{problem_id}') as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        
-                        # Extract information from the response
-                        title = data['title']
-                        difficulty = data['difficulty']
-                        url = data['url']
-                        
-                        # Send the problem info
-                        await ctx.send(f"🧩 Problem #{problem_id}: {title} ({difficulty}) | {url}")
-                    elif response.status == 404:
-                        await ctx.send(f"❌ Problem #{problem_id} not found!")
-                    else:
-                        await ctx.send(f"❌ Failed to fetch problem #{problem_id}")
-        except ValueError:
-            # Handle case where problem_id is not a valid number
-            await ctx.send("❌ Please provide a valid problem number!")
+                async with session.get(f'https://leetcode-api-pied.vercel.app/problem/{problem_id}') as resp:
+                    if resp.status != 200:
+                        return
+
+                    data = await resp.json()
+                    await ctx.send(
+                        f"🧩 #{problem_id}: {data['title']} ({data['difficulty']}) | {data['url']}"
+                    )
+
         except Exception as e:
-            print(f"Error fetching LeetCode problem {problem_id}: {e}")
-            await ctx.send(f"❌ Error retrieving problem #{problem_id}")
-
-    @commands.Cog.event()
-    async def event_channel_commercial(self, channel, length):
-        """Automatically triggered when Twitch starts an ad break"""
-        await channel.send(f"📺 Ad break starting! Back in {length} seconds - don't go anywhere! ☕")
-        
-        # Schedule a "back from ads" message
-        asyncio.create_task(self.ad_break_over(channel, length))
-
-    async def ad_break_over(self, channel, duration):
-        """Send a message when the ad break should be over"""
-        await asyncio.sleep(duration)
-        await channel.send("🎉 We're back! Thanks for waiting through the ads! 👋")
+            print(f'[ERROR] problem command: {e}')
 
 
+    # ---------------- LINKS ----------------
     @commands.command(name='spotify')
     async def get_spotify(self, ctx):
         await ctx.send('https://open.spotify.com/user/31s6zl5xs5kqjw7qbrqgslamrcfa')
@@ -249,6 +341,8 @@ class Bot(commands.Bot):
     async def get_discord(self, ctx):
         await ctx.send('https://discord.gg/tHjeDK8Cd7')
 
+
+# ---------------- MAIN ----------------
 if __name__ == "__main__":
     bot = Bot()
     bot.run()
