@@ -328,20 +328,34 @@ class Bot(commands.Bot):
     # -----------------------------------------------------
     async def monitor_live_status(self):
         logger.info("Starting live status monitor loop...")
+        first_check = True
+
         while True:
             try:
                 live = await self.is_stream_live()
 
                 if live and not self.is_live:
-                    logger.info("Stream just went LIVE!")
-                    self.is_live = True
-
-                    await self.log_stream_metadata()
-
-                    # OPTIONAL: Run ads instantly when going live
-                    # asyncio.create_task(self.start_ad_immediately())
-
-                    self.ad_task = asyncio.create_task(self._run_ad_loop())
+                    if first_check:
+                        # Bot started while stream was already live
+                        logger.info(
+                            "Stream was already LIVE when bot started; "
+                            "marking live without immediate ad."
+                        )
+                        self.is_live = True
+                        await self.log_stream_metadata()
+                        # Start ad loop WITHOUT immediate-first-ad
+                        self.ad_task = asyncio.create_task(
+                            self._run_ad_loop(run_first_immediately=False)
+                        )
+                    else:
+                        # Genuine "went live" transition
+                        logger.info("Stream just went LIVE!")
+                        self.is_live = True
+                        await self.log_stream_metadata()
+                        # Start ad loop WITH immediate-first-ad
+                        self.ad_task = asyncio.create_task(
+                            self._run_ad_loop(run_first_immediately=True)
+                        )
 
                 elif not live and self.is_live:
                     logger.info("Stream went OFFLINE")
@@ -353,6 +367,7 @@ class Bot(commands.Bot):
                         self.ad_task.cancel()
                         self.ad_task = None
 
+                first_check = False
                 await asyncio.sleep(20)
 
             except asyncio.CancelledError:
@@ -370,47 +385,62 @@ class Bot(commands.Bot):
         asyncio.create_task(self.monitor_live_status())
 
     # -----------------------------------------------------
-    # ---------------- CHAT MESSAGE HANDLER ---------------
+    # ---------------- MESSAGE / COMMAND EVENTS -----------
     # -----------------------------------------------------
     async def event_message(self, message):
-        # Log all chat messages
-        logger.info("[CHAT] %s: %s", message.author.name, message.content)
-
-        # Detect if it is a command (starts with prefix)
+        # Only log commands, not all chat
         if message.content.startswith('!'):
-            logger.info("[COMMAND DETECTED] Raw: %s", message.content)
+            logger.info("[COMMAND] %s ran: %s", message.author.name, message.content)
 
         if message.echo:
             return
 
         await self.handle_commands(message)
 
+    async def event_command_error(self, ctx, error):
+        """
+        Centralized error handler for all commands.
+        Fires when a command raises, even if the command itself doesn't catch it.
+        """
+        cmd_name = ctx.command.name if getattr(ctx, "command", None) else "unknown"
+        author_name = ctx.author.name if getattr(ctx, "author", None) else "unknown"
+        logger.exception(
+            "Error in command '%s' triggered by %s: %s",
+            cmd_name,
+            author_name,
+            error,
+        )
+
     # -----------------------------------------------------
-    # ---------------- AD LOOP ----------------------------
+    # ---------------- AD LOOP (Option A/B Mix) -----------
     # -----------------------------------------------------
-    async def _run_ad_loop(self):
-        logger.info("Ad loop started.")
-        # wait until channels are connected
+    async def _run_ad_loop(self, run_first_immediately: bool):
+        logger.info(
+            "Ad loop started (run_first_immediately=%s).",
+            run_first_immediately,
+        )
+
+        # Wait until channels are connected
         while not self.connected_channels:
             await asyncio.sleep(1)
 
         channel = self.connected_channels[0]
 
-        while self.is_live:
-            try:
-                # Wait ~59 minutes
-                await asyncio.sleep(59 * 60)
-
-                if not self.is_live:
-                    break
-
+        try:
+            #
+            # ---------------- OPTIONAL FIRST AD ----------------
+            #
+            if run_first_immediately and self.is_live:
                 await channel.send("📢 Ad in 1 minute!")
-                logger.info("Announced ad in 1 minute.")
-                await asyncio.sleep(60)
+                logger.info("First ad alert sent immediately on stream start.")
+
+                await asyncio.sleep(60)  # 1 minute warning
 
                 if not self.is_live:
-                    break
+                    logger.info("Stream ended before first ad started.")
+                    return
 
+                # Run the first ad
                 async with aiohttp.ClientSession() as session:
                     headers = {
                         "Authorization": f"Bearer {os.getenv('ACCESS_TOKEN')}",
@@ -418,7 +448,7 @@ class Bot(commands.Bot):
                     }
                     payload = {
                         "broadcaster_id": os.getenv("BROADCASTER_ID"),
-                        "length": 180
+                        "length": 180,  # 3-minute ad
                     }
 
                     async with session.post(
@@ -429,30 +459,88 @@ class Bot(commands.Bot):
                         body = await resp.text()
                         if resp.status != 200:
                             logger.error(
-                                "Failed to start ad. HTTP %s: %s",
+                                "Failed to start FIRST ad. HTTP %s: %s",
+                                resp.status,
+                                body,
+                            )
+                            return
+
+                        logger.info("FIRST ad started successfully. Response: %s", body)
+                        await channel.send("📺 Ad starting (3 minutes).")
+
+                # Wait for ad to finish
+                await asyncio.sleep(180)
+
+                if not self.is_live:
+                    logger.info("Stream ended during first ad break.")
+                    return
+
+                await channel.send("✅ Ad break over!")
+                logger.info("FIRST ad break completed.")
+            else:
+                logger.info(
+                    "Skipping immediate first ad (stream was already live at bot startup "
+                    "or run_first_immediately=False)."
+                )
+
+            #
+            # ---------------- RECURRING ADS ----------------
+            #
+            while self.is_live:
+                # Wait 59 minutes (Twitch minimum spacing)
+                await asyncio.sleep(59 * 60)
+
+                if not self.is_live:
+                    break
+
+                await channel.send("📢 Ad in 1 minute!")
+                logger.info("Recurring ad alert sent.")
+
+                await asyncio.sleep(60)
+
+                if not self.is_live:
+                    break
+
+                # Run the recurring ad
+                async with aiohttp.ClientSession() as session:
+                    headers = {
+                        "Authorization": f"Bearer {os.getenv('ACCESS_TOKEN')}",
+                        "Client-Id": os.getenv("CLIENT_ID"),
+                    }
+                    payload = {
+                        "broadcaster_id": os.getenv("BROADCASTER_ID"),
+                        "length": 180,
+                    }
+
+                    async with session.post(
+                        "https://api.twitch.tv/helix/channels/commercial",
+                        headers=headers,
+                        json=payload
+                    ) as resp:
+                        body = await resp.text()
+                        if resp.status != 200:
+                            logger.error(
+                                "Failed to start recurring ad. HTTP %s: %s",
                                 resp.status,
                                 body,
                             )
                             break
 
-                        logger.info("Ad started successfully. Response: %s", body)
+                        logger.info("Recurring ad started. Response: %s", body)
                         await channel.send("📺 Ad starting (3 minutes).")
 
-                # Wait for the ad duration
                 await asyncio.sleep(180)
 
                 if not self.is_live:
                     break
 
                 await channel.send("✅ Ad break over!")
-                logger.info("Ad break over.")
+                logger.info("Recurring ad break completed.")
 
-            except asyncio.CancelledError:
-                logger.info("Ad loop cancelled.")
-                break
-            except Exception:
-                logger.exception("Fatal error in ad loop")
-                break
+        except asyncio.CancelledError:
+            logger.info("Ad loop cancelled (stream offline).")
+        except Exception:
+            logger.exception("Fatal error in ad loop")
 
         logger.info("Ad loop stopped (stream offline).")
 
