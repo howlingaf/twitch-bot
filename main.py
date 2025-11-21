@@ -849,28 +849,94 @@ class Bot(commands.Bot):
     @commands.command(name='problem')
     async def get_problem(self, ctx, problem_id: str = None):
         logger.info("!problem triggered by %s (problem_id=%r)", ctx.author.name, problem_id)
+
         try:
-            if problem_id is None:
-                logger.info("!problem ignored — no problem_id provided")
+            #
+            # -----------------------------------------------------
+            # CASE 1 — USER PASSED A PROBLEM NUMBER (explicit lookup)
+            # -----------------------------------------------------
+            #
+            if problem_id is not None:
+                # Ensure it's an integer problem number
+                if not problem_id.isdigit():
+                    await ctx.send("❌ Usage: !problem <number>")
+                    logger.info("!problem invalid explicit id %r", problem_id)
+                    return
+
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(f'https://leetcode-api-pied.vercel.app/problem/{problem_id}') as resp:
+                        if resp.status != 200:
+                            logger.error("!problem fetch failed: HTTP %s", resp.status)
+                            await ctx.send("❌ Failed to fetch that problem.")
+                            return
+
+                        data = await resp.json()
+
+                        await ctx.send(
+                            f"🧩 #{problem_id}: {data['title']} ({data['difficulty']}) | {data['url']}"
+                        )
+
+                        logger.info(
+                            "!problem responded with #%s: %s (%s)",
+                            problem_id, data['title'], data['difficulty']
+                        )
                 return
 
-            async with aiohttp.ClientSession() as session:
-                async with session.get(f'https://leetcode-api-pied.vercel.app/problem/{problem_id}') as resp:
-                    if resp.status != 200:
-                        logger.error("!problem fetch failed: HTTP %s", resp.status)
-                        return
+            #
+            # -----------------------------------------------------
+            # CASE 2 — NO NUMBER PASSED → SHOW CURRENT WORKED-ON PROBLEM
+            # -----------------------------------------------------
+            #
+            if not self.current_problem:
+                await ctx.send("❌ No problem is currently being worked on.")
+                logger.info("!problem — no current_problem set")
+                return
 
-                    data = await resp.json()
-                    await ctx.send(
-                        f"🧩 #{problem_id}: {data['title']} ({data['difficulty']}) | {data['url']}"
-                    )
-                    logger.info(
-                        "!problem responded with #%s: %s (%s)",
-                        problem_id, data['title'], data['difficulty']
-                    )
+            target = self.current_problem.strip()
 
-        except Exception:
-            logger.exception("Error in !problem command")
+            #
+            # CASE 2A — If the current problem is a LeetCode URL
+            #
+            if target.startswith("http://") or target.startswith("https://"):
+                parsed = urlparse(target)
+                if "leetcode.com" in parsed.netloc:
+                    # Extract slug
+                    match = re.search(r'/problems/([^/]+)/?', parsed.path)
+                    if match:
+                        slug = match.group(1)
+
+                        # Fetch slug details
+                        async with aiohttp.ClientSession() as session:
+                            async with session.get(f'https://leetcode-api-pied.vercel.app/slug/{slug}') as resp:
+                                if resp.status != 200:
+                                    await ctx.send(f"🔍 Working on: {slug.replace('-', ' ').title()}")
+                                    logger.info("!problem slug fetch failed")
+                                    return
+
+                                data = await resp.json()
+
+                                await ctx.send(
+                                    f"🧩 {data['title']} ({data['difficulty']}) | https://leetcode.com/problems/{slug}/"
+                                )
+                                logger.info("!problem returned current problem from slug %s", slug)
+                                return
+
+                # Fallback for non-LeetCode URLs
+                await ctx.send(f"🔍 Working on: {target}")
+                logger.info("!problem returned generic url %s", target)
+                return
+
+            #
+            # CASE 2B — If the current problem is plain text (e.g. from !ltlockin)
+            #
+            await ctx.send(f"🔍 Working on: {target}")
+            logger.info("!problem returned generic text target %s", target)
+
+    except Exception:
+        logger.exception("Error in !problem command")
+        await ctx.send("❌ Error while retrieving problem info.")
+
+
 
     @commands.command(name='spotify')
     async def get_spotify(self, ctx):
