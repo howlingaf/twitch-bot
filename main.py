@@ -851,13 +851,10 @@ class Bot(commands.Bot):
         logger.info("!problem triggered by %s (problem_id=%r)", ctx.author.name, problem_id)
 
         try:
-            #
             # -----------------------------------------------------
-            # CASE 1 — USER PASSED A PROBLEM NUMBER (explicit lookup)
+            # CASE 1 — USER PASSED A PROBLEM NUMBER
             # -----------------------------------------------------
-            #
             if problem_id is not None:
-                # Ensure it's an integer problem number
                 if not problem_id.isdigit():
                     await ctx.send("❌ Usage: !problem <number>")
                     logger.info("!problem invalid explicit id %r", problem_id)
@@ -871,22 +868,18 @@ class Bot(commands.Bot):
                             return
 
                         data = await resp.json()
-
                         await ctx.send(
                             f"🧩 #{problem_id}: {data['title']} ({data['difficulty']}) | {data['url']}"
                         )
-
                         logger.info(
                             "!problem responded with #%s: %s (%s)",
                             problem_id, data['title'], data['difficulty']
                         )
                 return
 
-            #
             # -----------------------------------------------------
-            # CASE 2 — NO NUMBER PASSED → SHOW CURRENT WORKED-ON PROBLEM
+            # CASE 2 — NO NUMBER → USE current_problem
             # -----------------------------------------------------
-            #
             if not self.current_problem:
                 await ctx.send("❌ No problem is currently being worked on.")
                 logger.info("!problem — no current_problem set")
@@ -894,13 +887,14 @@ class Bot(commands.Bot):
 
             target = self.current_problem.strip()
 
-            #
-            # CASE 2A — If the current problem is a LeetCode URL
-            #
+            # -----------------------------------------------------
+            # CASE 2A — target is a URL
+            # -----------------------------------------------------
             if target.startswith("http://") or target.startswith("https://"):
                 parsed = urlparse(target)
+
+                # ------- LeetCode URL: fetch full details -------
                 if "leetcode.com" in parsed.netloc:
-                    # Extract slug
                     match = re.search(r'/problems/([^/]+)/?', parsed.path)
                     if match:
                         slug = match.group(1)
@@ -909,27 +903,26 @@ class Bot(commands.Bot):
                         async with aiohttp.ClientSession() as session:
                             async with session.get(f'https://leetcode-api-pied.vercel.app/slug/{slug}') as resp:
                                 if resp.status != 200:
-                                    await ctx.send(f"🔍 Working on: {slug.replace('-', ' ').title()}")
+                                    await ctx.send(f"🔍 Working on: {slug.replace('-', ' ').title()} | {target}")
                                     logger.info("!problem slug fetch failed")
                                     return
 
                                 data = await resp.json()
-
                                 await ctx.send(
                                     f"🧩 {data['title']} ({data['difficulty']}) | https://leetcode.com/problems/{slug}/"
                                 )
                                 logger.info("!problem returned current problem from slug %s", slug)
                                 return
 
-                # Fallback for non-LeetCode URLs
+                # -------- Non-LeetCode URL --------
                 await ctx.send(f"🔍 Working on: {target}")
-                logger.info("!problem returned generic url %s", target)
+                logger.info("!problem returned non-LeetCode URL %s", target)
                 return
 
-            #
-            # CASE 2B — If the current problem is plain text (e.g. from !ltlockin)
-            #
-            await ctx.send(f"🔍 Working on: {target}")
+            # -----------------------------------------------------
+            # CASE 2B — Plain text lock-in target
+            # -----------------------------------------------------
+            await ctx.send(f"🔍 Working on: {target} (no link available)")
             logger.info("!problem returned generic text target %s", target)
 
         except Exception:
