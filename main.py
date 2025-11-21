@@ -932,9 +932,9 @@ class Bot(commands.Bot):
             await ctx.send(f"🔍 Working on: {target}")
             logger.info("!problem returned generic text target %s", target)
 
-    except Exception:
-        logger.exception("Error in !problem command")
-        await ctx.send("❌ Error while retrieving problem info.")
+        except Exception:
+            logger.exception("Error in !problem command")
+            await ctx.send("❌ Error while retrieving problem info.")
 
 
 
