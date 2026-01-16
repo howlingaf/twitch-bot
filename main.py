@@ -930,21 +930,44 @@ class Bot(commands.Bot):
             await ctx.send("❌ Error while retrieving problem info.")
 
 
-
-    @commands.command(name='spotify')
-    async def get_spotify(self, ctx):
-        logger.info("!spotify triggered by %s", ctx.author.name)
-        await ctx.send('https://open.spotify.com/user/31s6zl5xs5kqjw7qbrqgslamrcfa')
-
-    @commands.command(name='goodreads')
-    async def get_goodreads(self, ctx):
-        logger.info("!goodreads triggered by %s", ctx.author.name)
-        await ctx.send('https://www.goodreads.com/howlingfantods_')
-
     @commands.command(name='discord')
     async def get_discord(self, ctx):
         logger.info("!discord triggered by %s", ctx.author.name)
         await ctx.send('https://discord.gg/tHjeDK8Cd7')
+
+
+
+    @commands.command(name="commands")
+    async def list_commands(self, ctx):
+        """
+        Lists all available commands.
+        """
+        try:
+            visible_commands = []
+
+            for name, command in self.commands.items():
+                # Skip aliases (only show primary name)
+                if name != command.name:
+                    continue
+
+                if command.name in {"lt", "ltlockin","commands"}:
+                    continue
+
+                visible_commands.append(f"!{command.name}")
+
+            visible_commands.sort()
+
+            if not visible_commands:
+                await ctx.send("No commands available.")
+                return
+
+            # Twitch chat safe length (≈450 chars)
+            msg = "📜 " + " ".join(visible_commands)
+            await ctx.send(msg)
+
+        except Exception:
+            logger.exception("Error in !commands command")
+ 
 
 
 # ---------------------------------------------------------
