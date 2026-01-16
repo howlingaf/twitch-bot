@@ -549,7 +549,7 @@ class Bot(commands.Bot):
     # -----------------------------------------------------
     def _extract_problem_name(self, url: str) -> str:
         m = re.search(r'leetcode\.com/problems/([^/]+)', url)
-        return m.group(1).replace('-', ' ').title() if m else "LeetCode Problem"
+        return m.group(1).replace('-', ' ').title() if m else "Problem"
 
     async def _get_youtube_label(self, parsed, original_url: str) -> str:
         """Fetch a nice YouTube label: 'Title — Channel' or reasonable fallback."""
