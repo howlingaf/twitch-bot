@@ -1,8 +1,26 @@
 import json
+from pathlib import Path
+
+from websockets.http11 import Response
+from websockets.datastructures import Headers
 
 from .logger import logger
 
 overlay_clients = set()
+
+OVERLAY_DIR = Path(__file__).resolve().parent.parent / "overlay"
+
+
+def serve_overlay(connection, request):
+    if request.path == "/nowplaying":
+        html_path = OVERLAY_DIR / "nowplaying.html"
+        if html_path.exists():
+            return Response(200, "OK", Headers({
+                "Content-Type": "text/html; charset=utf-8",
+                "Access-Control-Allow-Origin": "*",
+            }), html_path.read_bytes())
+        return Response(404, "Not Found", Headers({}), b"File not found")
+    return None  # continue with WebSocket upgrade
 
 
 async def overlay_handler(websocket):

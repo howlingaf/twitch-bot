@@ -4,6 +4,7 @@ import contextlib
 import websockets
 
 from twitchbot import Bot, overlay_handler, log_maintenance_loop, logger
+from twitchbot.overlay import serve_overlay
 from twitchbot.config import OVERLAY_PORT
 
 
@@ -12,7 +13,10 @@ async def main():
 
     overlay_host = "0.0.0.0"
 
-    server = await websockets.serve(overlay_handler, overlay_host, OVERLAY_PORT)
+    server = await websockets.serve(
+        overlay_handler, overlay_host, OVERLAY_PORT,
+        process_request=serve_overlay,
+    )
     logger.info(
         "Overlay WebSocket server listening on ws://%s:%d",
         overlay_host,
