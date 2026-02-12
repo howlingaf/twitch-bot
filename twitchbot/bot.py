@@ -121,7 +121,7 @@ class Bot(commands.Bot):
     async def monitor_spotify(self):
         logger.info("Spotify now-playing monitor started.")
         try:
-            while self.is_live:
+            while True:  # TODO: revert to `while self.is_live:`
                 try:
                     if not self.spotify:
                         await asyncio.sleep(5)
@@ -180,6 +180,7 @@ class Bot(commands.Bot):
     async def event_ready(self):
         logger.info("Bot ready | %s", self.nick)
         asyncio.create_task(self.monitor_live_status())
+        asyncio.create_task(self.monitor_spotify())  # TODO: remove test line
 
     # ---------------- MESSAGE / COMMAND EVENTS ----------------
     async def event_message(self, message):
