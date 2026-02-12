@@ -38,8 +38,10 @@ class Bot(commands.Bot):
         self.spotify = None
         self.is_live = False
         self.ad_task = None
+        self.spotify_task = None
         self.lt_task = None
         self.ltlock_task = None
+        self._last_spotify_track_id = None
 
         self.init_spotify()
 
@@ -87,6 +89,10 @@ class Bot(commands.Bot):
                             self._run_ad_loop(run_first_immediately=True)
                         )
 
+                    self.spotify_task = asyncio.create_task(
+                        self.monitor_spotify()
+                    )
+
                 elif not live and self.is_live:
                     logger.info("Stream went OFFLINE")
                     self.is_live = False
@@ -97,6 +103,10 @@ class Bot(commands.Bot):
                         self.ad_task.cancel()
                         self.ad_task = None
 
+                    if self.spotify_task:
+                        self.spotify_task.cancel()
+                        self.spotify_task = None
+
                 first_check = False
                 await asyncio.sleep(20)
 
@@ -106,6 +116,65 @@ class Bot(commands.Bot):
             except Exception:
                 logger.exception("Error in live status monitor loop")
                 await asyncio.sleep(10)
+
+    # ---------------- SPOTIFY NOW-PLAYING MONITOR ----------------
+    async def monitor_spotify(self):
+        logger.info("Spotify now-playing monitor started.")
+        try:
+            while self.is_live:
+                try:
+                    if not self.spotify:
+                        await asyncio.sleep(5)
+                        continue
+
+                    data = await asyncio.to_thread(self.spotify.current_playback)
+
+                    if data and data.get("is_playing") and data.get("item"):
+                        item = data["item"]
+                        track_id = item.get("id")
+                        images = item.get("album", {}).get("images", [])
+                        album_art = images[0]["url"] if images else ""
+
+                        if track_id != self._last_spotify_track_id:
+                            self._last_spotify_track_id = track_id
+                            logger.info(
+                                "Now playing: %s — %s",
+                                item["name"],
+                                ", ".join(a["name"] for a in item["artists"]),
+                            )
+
+                        await overlay_broadcast({
+                            "command": "nowplaying",
+                            "song": item["name"],
+                            "artists": ", ".join(a["name"] for a in item["artists"]),
+                            "album_art": album_art,
+                            "progress_ms": data.get("progress_ms", 0),
+                            "duration_ms": item.get("duration_ms", 0),
+                            "is_playing": True,
+                        })
+                    else:
+                        if self._last_spotify_track_id is not None:
+                            self._last_spotify_track_id = None
+                            logger.info("Spotify playback stopped/paused.")
+
+                        await overlay_broadcast({
+                            "command": "nowplaying",
+                            "is_playing": False,
+                        })
+
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.exception("Error polling Spotify playback")
+
+                await asyncio.sleep(5)
+
+        except asyncio.CancelledError:
+            logger.info("Spotify now-playing monitor cancelled.")
+        finally:
+            await overlay_broadcast({"command": "nowplaying", "is_playing": False})
+            self._last_spotify_track_id = None
+            logger.info("Spotify now-playing monitor stopped.")
 
     # ---------------- BOT READY EVENT ----------------
     async def event_ready(self):
@@ -339,30 +408,6 @@ class Bot(commands.Bot):
 
         except Exception:
             logger.exception("Error in !daily command")
-
-    @commands.command(name='song')
-    async def current_song(self, ctx):
-        logger.info("!song triggered by %s", ctx.author.name)
-        try:
-            if not self.spotify:
-                logger.info("!song ignored \u2014 Spotify not initialized")
-                return
-
-            data = self.spotify.current_playback()
-            if not data or not data.get("is_playing"):
-                logger.info("!song \u2014 nothing is currently playing")
-                return
-
-            item = data["item"]
-            song = item["name"]
-            artists = ", ".join(a["name"] for a in item["artists"])
-            url = item["external_urls"]["spotify"]
-
-            await ctx.send(f"\U0001f3b5 {song} \u2014 {artists} | {url}")
-            logger.info("!song responded with '%s' by %s", song, artists)
-
-        except Exception:
-            logger.exception("Error in !song command")
 
     @commands.command(name='problem')
     async def get_problem(self, ctx, problem_id: str = None):

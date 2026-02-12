@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Now Playing</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: transparent;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    overflow: hidden;
+  }
+
+  #nowplaying {
+    position: fixed;
+    top: 0;
+    left: 0;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: #1e1e1e;
+    border-radius: 0;
+    padding: 6px 14px;
+    max-width: 260px;
+    width: 260px;
+    opacity: 0;
+    transform: translateY(20px);
+    transition: opacity 0.5s ease, transform 0.5s ease;
+  }
+
+  #nowplaying.visible {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  #album-art {
+    width: 40px;
+    height: 40px;
+    border-radius: 4px;
+    object-fit: cover;
+    flex-shrink: 0;
+  }
+
+  #track-info {
+    flex: 1;
+    min-width: 0;
+    color: #fff;
+  }
+
+  #song-name {
+    font-size: 13px;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  #artist-name {
+    font-size: 11px;
+    color: #b3b3b3;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-top: 1px;
+  }
+
+  #progress-bar {
+    margin-top: 4px;
+    width: 100%;
+    height: 3px;
+    background: rgba(255, 255, 255, 0.15);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+
+  #progress-fill {
+    height: 100%;
+    background: #1db954;
+    border-radius: 2px;
+    width: 0%;
+    transition: width 0.15s linear;
+  }
+</style>
+</head>
+<body>
+
+<div id="nowplaying">
+  <img id="album-art" src="" alt="">
+  <div id="track-info">
+    <div id="song-name"></div>
+    <div id="artist-name"></div>
+    <div id="progress-bar">
+      <div id="progress-fill"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+  const container = document.getElementById('nowplaying');
+  const albumArt = document.getElementById('album-art');
+  const songName = document.getElementById('song-name');
+  const artistName = document.getElementById('artist-name');
+  const progressFill = document.getElementById('progress-fill');
+
+  let progressMs = 0;
+  let durationMs = 0;
+  let isPlaying = false;
+  let lastUpdateTime = 0;
+  let tickInterval = null;
+
+  function updateProgress() {
+    if (!isPlaying || durationMs <= 0) return;
+    const elapsed = Date.now() - lastUpdateTime;
+    const current = Math.min(progressMs + elapsed, durationMs);
+    const pct = (current / durationMs) * 100;
+    progressFill.style.width = pct + '%';
+  }
+
+  function startTick() {
+    if (tickInterval) return;
+    tickInterval = setInterval(updateProgress, 100);
+  }
+
+  function stopTick() {
+    if (tickInterval) {
+      clearInterval(tickInterval);
+      tickInterval = null;
+    }
+  }
+
+  function handleNowPlaying(data) {
+    if (!data.is_playing) {
+      if (isPlaying) {
+        isPlaying = false;
+        stopTick();
+        container.classList.remove('visible');
+      }
+      return;
+    }
+
+    songName.textContent = data.song;
+    artistName.textContent = data.artists;
+
+    if (albumArt.src !== data.album_art) {
+      albumArt.src = data.album_art;
+    }
+
+    progressMs = data.progress_ms;
+    durationMs = data.duration_ms;
+    lastUpdateTime = Date.now();
+
+    const pct = durationMs > 0 ? (progressMs / durationMs) * 100 : 0;
+    progressFill.style.width = pct + '%';
+
+    if (!isPlaying) {
+      isPlaying = true;
+      container.classList.add('visible');
+      startTick();
+    }
+  }
+
+  function connect() {
+    const ws = new WebSocket('wss://overlay.howling.one');
+
+    ws.onopen = () => console.log('WebSocket connected');
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.command === 'nowplaying') {
+          handleNowPlaying(data);
+        }
+      } catch (e) {
+        console.error('Parse error:', e);
+      }
+    };
+
+    ws.onclose = () => {
+      console.log('WebSocket disconnected, reconnecting in 3s...');
+      stopTick();
+      setTimeout(connect, 3000);
+    };
+
+    ws.onerror = (err) => {
+      console.error('WebSocket error:', err);
+      ws.close();
+    };
+  }
+
+  connect();
+</script>
+</body>
+</html>
