@@ -161,8 +161,7 @@
   }
 
   function connect() {
-    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const ws = new WebSocket(proto + '//' + location.host);
+    const ws = new WebSocket('wss://overlay.howling.one');
 
     ws.onopen = () => console.log('WebSocket connected');
 
