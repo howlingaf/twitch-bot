@@ -55,6 +55,7 @@ class Bot(commands.Bot):
         self.stream_start_ts: int | None = None
         self.chatter_submissions: list[dict] = []
         self._seen_submissions: set[tuple[str, str]] = set()
+        self.stream_problems: list[str] = []  # slugs from !lt commands
 
         self.init_spotify()
 
@@ -88,6 +89,7 @@ class Bot(commands.Bot):
                     self.stream_start_ts = int(time.time())
                     self.chatter_submissions = []
                     self._seen_submissions = set()
+                    self.stream_problems = []
 
                     if first_check:
                         logger.info(
@@ -205,8 +207,10 @@ class Bot(commands.Bot):
             return
 
         stream_end = int(time.time())
+        logger.info("[RECAP] Stream problems: %s", self.stream_problems)
         payload = {
             "stream_start": self.stream_start_ts or stream_end,
+            "stream_problems": self.stream_problems,
             "stream_end": stream_end,
             "chatter_submissions": self.chatter_submissions,
         }
@@ -369,6 +373,15 @@ class Bot(commands.Bot):
 
             self.current_problem = url
             problem_name = extract_problem_name(url)
+
+            # Track problem slug for recap
+            slug_match = re.search(r'leetcode\.com/problems/([^/]+)', url)
+            if slug_match:
+                slug = slug_match.group(1)
+                if slug not in self.stream_problems:
+                    self.stream_problems.append(slug)
+                    logger.info("[RECAP] Tracking stream problem: %s", slug)
+
             await ctx.send(f"\u23f0 {minutes}-minute timer started for '{problem_name}'")
 
             self.lt_task = asyncio.create_task(self._run_lt_timer(ctx, problem_name, minutes))
