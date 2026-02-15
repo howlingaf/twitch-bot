@@ -1,4 +1,6 @@
 import asyncio
+import re
+import time
 from urllib.parse import urlparse
 
 import aiohttp
@@ -12,6 +14,8 @@ from .config import (
     SPOTIFY_CLIENT_ID,
     SPOTIFY_CLIENT_SECRET,
     SPOTIFY_REDIRECT_URI,
+    DISCORD_BOT_URL,
+    RECAP_SECRET,
 )
 from .logger import logger
 from .overlay import overlay_broadcast
@@ -22,6 +26,10 @@ from .twitch_api import (
     start_commercial,
 )
 from .helpers import extract_problem_name, make_lockin_label
+
+_LEETCODE_SUBMISSION_RE = re.compile(
+    r"https?://(?:www\.)?leetcode\.com/problems/([^/]+)/submissions/(\d+)"
+)
 
 
 class Bot(commands.Bot):
@@ -42,6 +50,11 @@ class Bot(commands.Bot):
         self.lt_task = None
         self.ltlock_task = None
         self._last_spotify_track_id = None
+
+        # Recap tracking
+        self.stream_start_ts: int | None = None
+        self.chatter_submissions: list[dict] = []
+        self._seen_submissions: set[tuple[str, str]] = set()
 
         self.init_spotify()
 
@@ -71,6 +84,11 @@ class Bot(commands.Bot):
                 live = await is_stream_live()
 
                 if live and not self.is_live:
+                    # Reset recap tracking
+                    self.stream_start_ts = int(time.time())
+                    self.chatter_submissions = []
+                    self._seen_submissions = set()
+
                     if first_check:
                         logger.info(
                             "Stream was already LIVE when bot started; "
@@ -96,6 +114,9 @@ class Bot(commands.Bot):
                 elif not live and self.is_live:
                     logger.info("Stream went OFFLINE")
                     self.is_live = False
+
+                    # Send recap to Discord bot
+                    await self._send_recap()
 
                     await delete_latest_vod()
 
@@ -176,6 +197,35 @@ class Bot(commands.Bot):
             self._last_spotify_track_id = None
             logger.info("Spotify now-playing monitor stopped.")
 
+    # ---------------- RECAP ----------------
+    async def _send_recap(self):
+        """POST recap data to the Discord bot."""
+        if not RECAP_SECRET or not DISCORD_BOT_URL:
+            logger.info("[RECAP] RECAP_SECRET or DISCORD_BOT_URL not set, skipping")
+            return
+
+        stream_end = int(time.time())
+        payload = {
+            "stream_start": self.stream_start_ts or stream_end,
+            "stream_end": stream_end,
+            "chatter_submissions": self.chatter_submissions,
+        }
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{DISCORD_BOT_URL}/recap",
+                    json=payload,
+                    headers={"Authorization": f"Bearer {RECAP_SECRET}"},
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    logger.info(
+                        "[RECAP] POST /recap -> %s (%d chatter submissions)",
+                        resp.status, len(self.chatter_submissions),
+                    )
+        except Exception:
+            logger.exception("[RECAP] Failed to POST recap to Discord bot")
+
     # ---------------- BOT READY EVENT ----------------
     async def event_ready(self):
         logger.info("Bot ready | %s", self.nick)
@@ -188,6 +238,24 @@ class Bot(commands.Bot):
 
         if message.echo:
             return
+
+        # Scan for LeetCode submission URLs from chatters
+        if self.is_live and message.author.name.lower() != "hairyrug_":
+            for match in _LEETCODE_SUBMISSION_RE.finditer(message.content):
+                slug = match.group(1)
+                url = match.group(0).rstrip("/") + "/"
+                key = (message.author.name.lower(), url)
+                if key not in self._seen_submissions:
+                    self._seen_submissions.add(key)
+                    self.chatter_submissions.append({
+                        "twitch_user": message.author.name,
+                        "url": url,
+                        "slug": slug,
+                    })
+                    logger.info(
+                        "[RECAP] Captured submission from %s: %s",
+                        message.author.name, url,
+                    )
 
         await self.handle_commands(message)
 

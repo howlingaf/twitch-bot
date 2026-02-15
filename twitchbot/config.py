@@ -16,3 +16,6 @@ SPOTIFY_REDIRECT_URI = os.getenv("SPOTIFY_REDIRECT_URI")
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
 
 OVERLAY_PORT = int(os.getenv("OVERLAY_PORT", "8765"))
+
+DISCORD_BOT_URL = (os.getenv("DISCORD_BOT_URL") or "http://127.0.0.1:8787").rstrip("/")
+RECAP_SECRET = os.getenv("RECAP_SECRET", "")
