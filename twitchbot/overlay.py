@@ -20,6 +20,8 @@ def serve_overlay(connection, request):
                 "Access-Control-Allow-Origin": "*",
             }), html_path.read_bytes())
         return Response(404, "Not Found", Headers({}), b"File not found")
+    if not request.headers.get("Upgrade"):
+        return Response(426, "Upgrade Required", Headers({}), b"WebSocket connections only")
     return None  # continue with WebSocket upgrade
 
 

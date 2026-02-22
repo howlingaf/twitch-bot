@@ -559,6 +559,37 @@ class Bot(commands.Bot):
             logger.exception("Error in !problem command")
             await ctx.send("\u274c Error while retrieving problem info.")
 
+    @commands.command(name='recaptest')
+    async def recap_test(self, ctx):
+        logger.info("!recaptest triggered by %s", ctx.author.name)
+        if not (ctx.author.is_mod or ctx.author.is_broadcaster):
+            return
+
+        if not RECAP_SECRET or not DISCORD_BOT_URL:
+            await ctx.send("\u274c RECAP_SECRET or DISCORD_BOT_URL not configured.")
+            return
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{DISCORD_BOT_URL}/recap/verify",
+                    headers={"Authorization": f"Bearer {RECAP_SECRET}"},
+                    timeout=aiohttp.ClientTimeout(total=5),
+                ) as resp:
+                    if resp.status == 200:
+                        await ctx.send("\u2705 Discord bot connection verified!")
+                    elif resp.status == 401:
+                        await ctx.send("\u274c RECAP_SECRET mismatch — auth rejected by Discord bot.")
+                    else:
+                        await ctx.send(f"\u274c Discord bot returned HTTP {resp.status}")
+        except aiohttp.ClientConnectorError:
+            await ctx.send(f"\u274c Cannot reach Discord bot at {DISCORD_BOT_URL}")
+        except asyncio.TimeoutError:
+            await ctx.send(f"\u274c Discord bot timed out at {DISCORD_BOT_URL}")
+        except Exception as e:
+            logger.exception("[RECAPTEST] Unexpected error")
+            await ctx.send(f"\u274c Error: {e}")
+
     @commands.command(name='discord')
     async def get_discord(self, ctx):
         logger.info("!discord triggered by %s", ctx.author.name)
@@ -573,7 +604,7 @@ class Bot(commands.Bot):
                 if name != command.name:
                     continue
 
-                if command.name in {"lt", "ltlockin", "commands"}:
+                if command.name in {"lt", "ltlockin", "commands", "recaptest"}:
                     continue
 
                 visible_commands.append(f"!{command.name}")
