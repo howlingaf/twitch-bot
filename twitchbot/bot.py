@@ -590,6 +590,33 @@ class Bot(commands.Bot):
             logger.exception("[RECAPTEST] Unexpected error")
             await ctx.send(f"\u274c Error: {e}")
 
+    @commands.command(name='song')
+    async def now_playing(self, ctx):
+        logger.info("!song triggered by %s", ctx.author.name)
+        try:
+            if not self.spotify:
+                await ctx.send("\u274c Spotify is not connected.")
+                return
+
+            data = await asyncio.to_thread(self.spotify.current_playback)
+
+            if not data or not data.get("is_playing") or not data.get("item"):
+                await ctx.send("\u274c Nothing is playing right now.")
+                return
+
+            item = data["item"]
+            name = item["name"]
+            artists = ", ".join(a["name"] for a in item["artists"])
+            url = item.get("external_urls", {}).get("spotify", "")
+            msg = f"\u266b {name} — {artists}"
+            if url:
+                msg += f" | {url}"
+            await ctx.send(msg)
+
+        except Exception:
+            logger.exception("Error in !song command")
+            await ctx.send("\u274c Could not fetch current song.")
+
     @commands.command(name='discord')
     async def get_discord(self, ctx):
         logger.info("!discord triggered by %s", ctx.author.name)
