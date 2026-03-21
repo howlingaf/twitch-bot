@@ -140,3 +140,40 @@ async def start_commercial(length: int = 180) -> bool:
 
             logger.info("Ad started successfully. Response: %s", body)
             return True
+
+
+async def send_shoutout(to_broadcaster_id: str):
+    async with aiohttp.ClientSession() as session:
+        headers = _twitch_headers()
+        params = {
+            "from_broadcaster_id": BROADCASTER_ID,
+            "to_broadcaster_id": to_broadcaster_id,
+            "moderator_id": BROADCASTER_ID,
+        }
+        async with session.post(
+            "https://api.twitch.tv/helix/chat/shoutouts",
+            headers=headers,
+            params=params,
+        ) as resp:
+            if resp.status == 204:
+                logger.info("Shoutout sent to broadcaster %s", to_broadcaster_id)
+                return True
+            body = await resp.text()
+            logger.error(
+                "Shoutout failed. HTTP %s: %s", resp.status, body
+            )
+            return False
+
+
+async def get_user_id(login: str) -> str | None:
+    async with aiohttp.ClientSession() as session:
+        headers = _twitch_headers()
+        async with session.get(
+            f"https://api.twitch.tv/helix/users?login={login}",
+            headers=headers,
+        ) as resp:
+            if resp.status != 200:
+                return None
+            data = await resp.json()
+            users = data.get("data", [])
+            return users[0]["id"] if users else None

@@ -1,6 +1,10 @@
 import asyncio
+import json
 import re
 import time
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+from pathlib import Path
 from urllib.parse import urlparse
 
 import aiohttp
@@ -18,12 +22,16 @@ from .config import (
     RECAP_SECRET,
 )
 from .logger import logger
+
+STREAMING_STATUS_PATH = Path.home() / ".openclaw" / "workspace" / "streaming-status.json"
 from .overlay import overlay_broadcast
 from .twitch_api import (
     log_stream_metadata,
     is_stream_live,
     delete_latest_vod,
     start_commercial,
+    send_shoutout,
+    get_user_id,
 )
 from .helpers import extract_problem_name, make_lockin_label
 
@@ -75,6 +83,25 @@ class Bot(commands.Bot):
             logger.error("Spotify init failed: %s", e)
             self.spotify = None
 
+    # ---------------- STREAMING STATUS FOR OPENCLAW ----------------
+    def _write_streaming_status(self):
+        try:
+            CT = ZoneInfo("America/Chicago")
+            now = datetime.now(CT).isoformat()
+            data = {
+                "live": self.is_live,
+                "lastUpdated": now,
+            }
+            if self.is_live and self.stream_start_ts:
+                data["streamStarted"] = datetime.fromtimestamp(
+                    self.stream_start_ts, tz=CT
+                ).isoformat()
+            tmp = STREAMING_STATUS_PATH.with_suffix(".tmp")
+            tmp.write_text(json.dumps(data, indent=2))
+            tmp.rename(STREAMING_STATUS_PATH)
+        except Exception:
+            logger.exception("Failed to write streaming-status.json")
+
     # ---------------- LIVE STATUS MONITOR ----------------
     async def monitor_live_status(self):
         logger.info("Starting live status monitor loop...")
@@ -97,6 +124,7 @@ class Bot(commands.Bot):
                             "marking live without immediate ad."
                         )
                         self.is_live = True
+                        self._write_streaming_status()
                         await log_stream_metadata()
                         self.ad_task = asyncio.create_task(
                             self._run_ad_loop(run_first_immediately=False)
@@ -104,6 +132,7 @@ class Bot(commands.Bot):
                     else:
                         logger.info("Stream just went LIVE!")
                         self.is_live = True
+                        self._write_streaming_status()
                         await log_stream_metadata()
                         self.ad_task = asyncio.create_task(
                             self._run_ad_loop(run_first_immediately=True)
@@ -116,6 +145,7 @@ class Bot(commands.Bot):
                 elif not live and self.is_live:
                     logger.info("Stream went OFFLINE")
                     self.is_live = False
+                    self._write_streaming_status()
 
                     # Send recap to Discord bot
                     await self._send_recap()
@@ -234,6 +264,27 @@ class Bot(commands.Bot):
     async def event_ready(self):
         logger.info("Bot ready | %s", self.nick)
         asyncio.create_task(self.monitor_live_status())
+
+    # ---------------- RAID AUTO-SHOUTOUT ----------------
+    async def event_raw_usernotice(self, channel, tags: dict):
+        if tags.get("msg-id") != "raid":
+            return
+
+        raider_login = tags.get("login") or tags.get("msg-param-login", "")
+        viewer_count = tags.get("msg-param-viewerCount", "?")
+        logger.info("Raid from %s with %s viewers", raider_login, viewer_count)
+
+        if not raider_login:
+            return
+
+        raider_id = await get_user_id(raider_login)
+        if not raider_id:
+            logger.warning("Could not resolve user ID for raider %s", raider_login)
+            return
+
+        ok = await send_shoutout(raider_id)
+        if ok:
+            logger.info("Auto-shoutout sent for raider %s", raider_login)
 
     # ---------------- MESSAGE / COMMAND EVENTS ----------------
     async def event_message(self, message):
