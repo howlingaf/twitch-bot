@@ -33,7 +33,7 @@ from .twitch_api import (
     send_shoutout,
     get_user_id,
 )
-from .helpers import extract_problem_name, make_lockin_label
+from .helpers import extract_problem_name
 
 _LEETCODE_SUBMISSION_RE = re.compile(
     r"https?://(?:www\.)?leetcode\.com/problems/([^/]+)/submissions/(\d+)"
@@ -56,7 +56,6 @@ class Bot(commands.Bot):
         self.ad_task = None
         self.spotify_task = None
         self.lt_task = None
-        self.ltlock_task = None
         self._last_spotify_track_id = None
 
         # Recap tracking
@@ -416,6 +415,7 @@ class Bot(commands.Bot):
                     self.lt_task.cancel()
                     logger.info("!lt clear \u2014 cancelled existing LT timer task.")
                 self.current_problem = None
+                await ctx.send("\u2705 Problem cleared!")
                 return
 
             if not url or minutes <= 0 or minutes > 180:
@@ -457,67 +457,6 @@ class Bot(commands.Bot):
             logger.info("LT timer cancelled for '%s'", problem_name)
         except Exception:
             logger.exception("Error in LT timer loop")
-
-    # ---------------- LOCK-IN + OVERLAY TIMER ----------------
-    @commands.command(name='ltlockin')
-    async def leetcode_lockin(self, ctx, *args):
-        logger.info("!ltlockin triggered by %s (args=%r)", ctx.author.name, args)
-        try:
-            if not (ctx.author.is_mod or ctx.author.is_broadcaster or ctx.author.is_vip):
-                logger.info("!ltlockin ignored for %s \u2014 insufficient permissions", ctx.author.name)
-                return
-
-            if len(args) == 1 and args[0].lower() == "clear":
-                if self.ltlock_task and not self.ltlock_task.done():
-                    self.ltlock_task.cancel()
-                await overlay_broadcast({"command": "stop"})
-                logger.info("LOCK-IN cancelled via !ltlockin clear.")
-                return
-
-            if len(args) < 2:
-                logger.info("!ltlockin ignored \u2014 need at least 2 args (target, minutes)")
-                return
-
-            try:
-                minutes = int(args[-1])
-                if minutes <= 0 or minutes > 180:
-                    logger.info("!ltlockin invalid minutes=%d", minutes)
-                    return
-            except ValueError:
-                logger.info("!ltlockin failed \u2014 last argument not an integer minutes")
-                return
-
-            target = " ".join(args[:-1]).strip()
-            self.current_problem = target
-
-            display_name = await make_lockin_label(target)
-
-            await ctx.send(f"\U0001f512 LOCKED IN \u2014 {minutes} minutes for: {display_name}")
-            logger.info("LOCK-IN started for %r (%d minutes)", display_name, minutes)
-
-            await overlay_broadcast({
-                "command": "start",
-                "duration": minutes * 60,
-                "label": display_name
-            })
-
-            self.ltlock_task = asyncio.create_task(
-                self._run_ltlock_timer(ctx, display_name, minutes)
-            )
-
-        except Exception:
-            logger.exception("Error in !ltlockin command")
-
-    async def _run_ltlock_timer(self, ctx, target_label, minutes):
-        try:
-            await asyncio.sleep(minutes * 60)
-            await overlay_broadcast({"command": "stop"})
-            await ctx.send(f"\u23f0 Time's up for '{target_label}' \u2014 LOCK-IN over!")
-            logger.info("LOCK-IN timer completed for '%s'", target_label)
-        except asyncio.CancelledError:
-            logger.info("LOCK-IN timer cancelled for '%s'", target_label)
-        except Exception:
-            logger.exception("Error in LTLOCK timer loop")
 
     # ---------------- OTHER COMMANDS ----------------
     @commands.command(name='daily')
@@ -682,7 +621,7 @@ class Bot(commands.Bot):
                 if name != command.name:
                     continue
 
-                if command.name in {"lt", "ltlockin", "commands", "recaptest"}:
+                if command.name in {"lt", "commands", "recaptest"}:
                     continue
 
                 visible_commands.append(f"!{command.name}")
