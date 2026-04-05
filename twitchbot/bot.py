@@ -637,3 +637,8 @@ class Bot(commands.Bot):
 
         except Exception:
             logger.exception("Error in !commands command")
+
+    @commands.command(name='project')
+    async def get_project(self, ctx):
+        logger.info("!project triggered by %s", ctx.author.name)
+        await ctx.send('https://github.com/howlingfantods-dev/dbms')
