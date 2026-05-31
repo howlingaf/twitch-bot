@@ -39,6 +39,9 @@ _LEETCODE_SUBMISSION_RE = re.compile(
     r"https?://(?:www\.)?leetcode\.com/problems/([^/]+)/submissions/(\d+)"
 )
 
+_URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
+_RECAP_SKIP_HOSTS = ("github.com", "leetcode.com", "discord.com", "discord.gg", "discordapp.com")
+
 
 class Bot(commands.Bot):
     def __init__(self):
@@ -63,6 +66,8 @@ class Bot(commands.Bot):
         self.chatter_submissions: list[dict] = []
         self._seen_submissions: set[tuple[str, str]] = set()
         self.stream_problems: list[str] = []  # slugs from !lt commands
+        self.streamer_links: list[str] = []  # broadcaster-pasted non-skip URLs
+        self._seen_streamer_links: set[str] = set()
 
         self.init_spotify()
 
@@ -116,6 +121,8 @@ class Bot(commands.Bot):
                     self.chatter_submissions = []
                     self._seen_submissions = set()
                     self.stream_problems = []
+                    self.streamer_links = []
+                    self._seen_streamer_links = set()
 
                     if first_check:
                         logger.info(
@@ -242,6 +249,7 @@ class Bot(commands.Bot):
             "stream_problems": self.stream_problems,
             "stream_end": stream_end,
             "chatter_submissions": self.chatter_submissions,
+            "streamer_links": self.streamer_links,
         }
 
         try:
@@ -310,6 +318,21 @@ class Bot(commands.Bot):
                         "[RECAP] Captured submission from %s: %s",
                         message.author.name, url,
                     )
+
+        # Capture broadcaster-pasted non-skip URLs for the recap
+        if self.is_live and message.author.name.lower() == "hairyrug_":
+            for raw in _URL_RE.findall(message.content):
+                url = raw.rstrip(".,!?);]>'\"")
+                host = (urlparse(url).hostname or "").lower()
+                if not host:
+                    continue
+                if any(host == h or host.endswith("." + h) for h in _RECAP_SKIP_HOSTS):
+                    continue
+                if url in self._seen_streamer_links:
+                    continue
+                self._seen_streamer_links.add(url)
+                self.streamer_links.append(url)
+                logger.info("[RECAP] Captured streamer link: %s", url)
 
         await self.handle_commands(message)
 
