@@ -48,7 +48,7 @@ class Bot(commands.Bot):
         super().__init__(
             token=BOT_OAUTH_TOKEN,
             client_id=CLIENT_ID,
-            nick="hairyrug_",
+            nick="hairyrugaf",
             prefix='!',
             initial_channels=["howlingaf"],
         )
@@ -302,7 +302,7 @@ class Bot(commands.Bot):
             return
 
         # Scan for LeetCode submission URLs from chatters
-        if self.is_live and message.author.name.lower() != "hairyrug_":
+        if self.is_live and message.author.name.lower() != "hairyrugaf":
             for match in _LEETCODE_SUBMISSION_RE.finditer(message.content):
                 slug = match.group(1)
                 url = match.group(0).rstrip("/") + "/"
@@ -320,7 +320,7 @@ class Bot(commands.Bot):
                     )
 
         # Capture broadcaster-pasted non-skip URLs for the recap
-        if self.is_live and message.author.name.lower() == "hairyrug_":
+        if self.is_live and message.author.name.lower() == "hairyrugaf":
             for raw in _URL_RE.findall(message.content):
                 url = raw.rstrip(".,!?);]>'\"")
                 host = (urlparse(url).hostname or "").lower()
