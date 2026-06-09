@@ -50,7 +50,7 @@ class Bot(commands.Bot):
             client_id=CLIENT_ID,
             nick="hairyrug_",
             prefix='!',
-            initial_channels=["howlongfantods"],
+            initial_channels=["howlingaf"],
         )
 
         self.current_problem = None
