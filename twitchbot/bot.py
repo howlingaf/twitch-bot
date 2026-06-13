@@ -42,15 +42,19 @@ _LEETCODE_SUBMISSION_RE = re.compile(
 _URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
 _RECAP_SKIP_HOSTS = ("github.com", "leetcode.com", "discord.com", "discord.gg", "discordapp.com")
 
+# Twitch usernames the bot keys behavior off of. Update these on a rename.
+BOT_NICK = "hairyrugaf"      # the bot's own account
+BROADCASTER = "howlingaf"    # the channel owner who streams
+
 
 class Bot(commands.Bot):
     def __init__(self):
         super().__init__(
             token=BOT_OAUTH_TOKEN,
             client_id=CLIENT_ID,
-            nick="hairyrugaf",
+            nick=BOT_NICK,
             prefix='!',
-            initial_channels=["howlingaf"],
+            initial_channels=[BROADCASTER],
         )
 
         self.current_problem = None
@@ -302,7 +306,7 @@ class Bot(commands.Bot):
             return
 
         # Scan for LeetCode submission URLs from chatters
-        if self.is_live and message.author.name.lower() != "hairyrugaf":
+        if self.is_live and message.author.name.lower() != BOT_NICK:
             for match in _LEETCODE_SUBMISSION_RE.finditer(message.content):
                 slug = match.group(1)
                 url = match.group(0).rstrip("/") + "/"
@@ -320,7 +324,7 @@ class Bot(commands.Bot):
                     )
 
         # Capture broadcaster-pasted non-skip URLs for the recap
-        if self.is_live and message.author.name.lower() == "hairyrugaf":
+        if self.is_live and message.author.name.lower() == BROADCASTER:
             for raw in _URL_RE.findall(message.content):
                 url = raw.rstrip(".,!?);]>'\"")
                 host = (urlparse(url).hostname or "").lower()
