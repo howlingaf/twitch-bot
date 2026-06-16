@@ -715,4 +715,4 @@ class Bot(commands.Bot):
     @commands.command(name='project')
     async def get_project(self, ctx):
         logger.info("!project triggered by %s", ctx.author.name)
-        await ctx.send('https://github.com/howlingfantods-dev/dbms')
+        await ctx.send('https://github.com/howlingaf/howlingdb')
