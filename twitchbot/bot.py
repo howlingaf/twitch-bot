@@ -460,6 +460,12 @@ class Bot(commands.Bot):
                     self.stream_problems.append(slug)
                     logger.info("[RECAP] Tracking stream problem: %s", slug)
 
+            # Cancel any timer already running so a new !lt replaces it instead
+            # of leaving an orphaned task that keeps firing for the old problem.
+            if self.lt_task and not self.lt_task.done():
+                self.lt_task.cancel()
+                logger.info("!lt \u2014 cancelled previous timer before starting a new one.")
+
             await ctx.send(f"\u23f0 {minutes}-minute timer started for '{problem_name}'")
 
             self.lt_task = asyncio.create_task(self._run_lt_timer(ctx, problem_name, minutes))
