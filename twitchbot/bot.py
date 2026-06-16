@@ -28,7 +28,6 @@ from .overlay import overlay_broadcast
 from .twitch_api import (
     log_stream_metadata,
     is_stream_live,
-    delete_latest_vod,
     start_commercial,
     send_shoutout,
     get_user_id,
@@ -159,8 +158,6 @@ class Bot(commands.Bot):
 
                     # Send recap to Discord bot
                     await self._send_recap()
-
-                    await delete_latest_vod()
 
                     if self.ad_task:
                         self.ad_task.cancel()
