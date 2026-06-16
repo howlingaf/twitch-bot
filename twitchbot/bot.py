@@ -623,9 +623,9 @@ class Bot(commands.Bot):
             logger.exception("Error in !problem command")
             await ctx.send("\u274c Error while retrieving problem info.")
 
-    @commands.command(name='recaptest')
-    async def recap_test(self, ctx):
-        logger.info("!recaptest triggered by %s", ctx.author.name)
+    @commands.command(name='test')
+    async def test_connection(self, ctx):
+        logger.info("!test triggered by %s", ctx.author.name)
         if not (ctx.author.is_mod or ctx.author.is_broadcaster):
             return
 
@@ -651,7 +651,7 @@ class Bot(commands.Bot):
         except asyncio.TimeoutError:
             await ctx.send(f"\u274c Discord bot timed out at {DISCORD_BOT_URL}")
         except Exception as e:
-            logger.exception("[RECAPTEST] Unexpected error")
+            logger.exception("[TEST] Unexpected error")
             await ctx.send(f"\u274c Error: {e}")
 
     @commands.command(name='song')
@@ -695,7 +695,7 @@ class Bot(commands.Bot):
                 if name != command.name:
                     continue
 
-                if command.name in {"lt", "commands", "recaptest"}:
+                if command.name in {"lt", "commands", "test"}:
                     continue
 
                 visible_commands.append(f"!{command.name}")
