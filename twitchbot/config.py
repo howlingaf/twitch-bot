@@ -26,3 +26,8 @@ OVERLAY_PORT = int(os.getenv("OVERLAY_PORT", "8765"))
 
 DISCORD_BOT_URL = (os.getenv("DISCORD_BOT_URL") or "http://127.0.0.1:8787").rstrip("/")
 RECAP_SECRET = os.getenv("RECAP_SECRET", "")
+
+# Inbound console API (Discord -> Twitch bot). Disabled unless CONSOLE_SECRET is
+# set. Bound to localhost only; the Discord bot on the same VPS calls it.
+CONSOLE_SECRET = os.getenv("CONSOLE_SECRET", "")
+CONSOLE_PORT = int(os.getenv("CONSOLE_PORT", "8788"))
