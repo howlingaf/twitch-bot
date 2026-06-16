@@ -25,6 +25,13 @@ async def log_stream_metadata():
 
 
 async def is_stream_live():
+    """Return True if live, False if confirmed offline, or None if unknown.
+
+    A non-200 response (auth expiry, 5xx, rate limit) is NOT proof the stream
+    is offline, so it returns None. Callers must treat None as "no signal" and
+    leave the live/offline state unchanged, otherwise a transient API blip would
+    masquerade as the stream ending.
+    """
     async with aiohttp.ClientSession() as session:
         headers = _twitch_headers()
         url = f"https://api.twitch.tv/helix/streams?user_id={BROADCASTER_ID}"
@@ -32,7 +39,7 @@ async def is_stream_live():
         async with session.get(url, headers=headers) as resp:
             if resp.status != 200:
                 logger.error("Stream status check failed: HTTP %s", resp.status)
-                return False
+                return None
 
             data = await resp.json()
             live = len(data.get("data", [])) > 0
