@@ -28,7 +28,6 @@ from .overlay import overlay_broadcast
 from .twitch_api import (
     log_stream_metadata,
     is_stream_live,
-    delete_latest_vod,
     start_commercial,
     send_shoutout,
     get_user_id,
@@ -64,6 +63,7 @@ class Bot(commands.Bot):
         self.spotify_task = None
         self.lt_task = None
         self._last_spotify_track_id = None
+        self._monitor_started = False
 
         # Recap tracking
         self.stream_start_ts: int | None = None
@@ -111,15 +111,37 @@ class Bot(commands.Bot):
             logger.exception("Failed to write streaming-status.json")
 
     # ---------------- LIVE STATUS MONITOR ----------------
+    # Consecutive confirmed-offline polls required before declaring the stream
+    # over. At a 20s poll interval this rides out ~1 minute of API trouble
+    # before tearing down (recap, ad loop) the live session.
+    OFFLINE_CONFIRMATIONS = 3
+
     async def monitor_live_status(self):
         logger.info("Starting live status monitor loop...")
         first_check = True
+        offline_strikes = 0
 
         while True:
             try:
                 live = await is_stream_live()
 
+                if live is None:
+                    # Unknown (API error/timeout) — not proof of anything.
+                    # Leave state and the strike count untouched.
+                    logger.warning(
+                        "Stream status unknown this poll; leaving state unchanged "
+                        "(is_live=%s)", self.is_live
+                    )
+                    first_check = False
+                    await asyncio.sleep(20)
+                    continue
+
+                if live and self.is_live:
+                    # Still live; clear any partial offline streak.
+                    offline_strikes = 0
+
                 if live and not self.is_live:
+                    offline_strikes = 0
                     # Reset recap tracking
                     self.stream_start_ts = int(time.time())
                     self.chatter_submissions = []
@@ -153,14 +175,27 @@ class Bot(commands.Bot):
                     )
 
                 elif not live and self.is_live:
-                    logger.info("Stream went OFFLINE")
+                    offline_strikes += 1
+                    if offline_strikes < self.OFFLINE_CONFIRMATIONS:
+                        logger.info(
+                            "Stream appears OFFLINE (%d/%d confirmations) — "
+                            "waiting before tearing down.",
+                            offline_strikes, self.OFFLINE_CONFIRMATIONS,
+                        )
+                        first_check = False
+                        await asyncio.sleep(20)
+                        continue
+
+                    logger.info(
+                        "Stream confirmed OFFLINE after %d checks",
+                        offline_strikes,
+                    )
+                    offline_strikes = 0
                     self.is_live = False
                     self._write_streaming_status()
 
                     # Send recap to Discord bot
                     await self._send_recap()
-
-                    await delete_latest_vod()
 
                     if self.ad_task:
                         self.ad_task.cancel()
@@ -274,6 +309,12 @@ class Bot(commands.Bot):
     # ---------------- BOT READY EVENT ----------------
     async def event_ready(self):
         logger.info("Bot ready | %s", self.nick)
+        # event_ready re-fires on every IRC reconnect. Spawn the monitor loop
+        # only once, otherwise each reconnect leaks another loop and they race
+        # over live state (double ad alerts, double recaps).
+        if self._monitor_started:
+            return
+        self._monitor_started = True
         asyncio.create_task(self.monitor_live_status())
 
     # ---------------- RAID AUTO-SHOUTOUT ----------------
@@ -459,6 +500,12 @@ class Bot(commands.Bot):
                 if slug not in self.stream_problems:
                     self.stream_problems.append(slug)
                     logger.info("[RECAP] Tracking stream problem: %s", slug)
+
+            # Cancel any timer already running so a new !lt replaces it instead
+            # of leaving an orphaned task that keeps firing for the old problem.
+            if self.lt_task and not self.lt_task.done():
+                self.lt_task.cancel()
+                logger.info("!lt \u2014 cancelled previous timer before starting a new one.")
 
             await ctx.send(f"\u23f0 {minutes}-minute timer started for '{problem_name}'")
 
