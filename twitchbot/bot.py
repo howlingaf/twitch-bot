@@ -111,15 +111,37 @@ class Bot(commands.Bot):
             logger.exception("Failed to write streaming-status.json")
 
     # ---------------- LIVE STATUS MONITOR ----------------
+    # Consecutive confirmed-offline polls required before declaring the stream
+    # over. At a 20s poll interval this rides out ~1 minute of API trouble
+    # before tearing down (recap, ad loop) the live session.
+    OFFLINE_CONFIRMATIONS = 3
+
     async def monitor_live_status(self):
         logger.info("Starting live status monitor loop...")
         first_check = True
+        offline_strikes = 0
 
         while True:
             try:
                 live = await is_stream_live()
 
+                if live is None:
+                    # Unknown (API error/timeout) — not proof of anything.
+                    # Leave state and the strike count untouched.
+                    logger.warning(
+                        "Stream status unknown this poll; leaving state unchanged "
+                        "(is_live=%s)", self.is_live
+                    )
+                    first_check = False
+                    await asyncio.sleep(20)
+                    continue
+
+                if live and self.is_live:
+                    # Still live; clear any partial offline streak.
+                    offline_strikes = 0
+
                 if live and not self.is_live:
+                    offline_strikes = 0
                     # Reset recap tracking
                     self.stream_start_ts = int(time.time())
                     self.chatter_submissions = []
@@ -153,7 +175,22 @@ class Bot(commands.Bot):
                     )
 
                 elif not live and self.is_live:
-                    logger.info("Stream went OFFLINE")
+                    offline_strikes += 1
+                    if offline_strikes < self.OFFLINE_CONFIRMATIONS:
+                        logger.info(
+                            "Stream appears OFFLINE (%d/%d confirmations) — "
+                            "waiting before tearing down.",
+                            offline_strikes, self.OFFLINE_CONFIRMATIONS,
+                        )
+                        first_check = False
+                        await asyncio.sleep(20)
+                        continue
+
+                    logger.info(
+                        "Stream confirmed OFFLINE after %d checks",
+                        offline_strikes,
+                    )
+                    offline_strikes = 0
                     self.is_live = False
                     self._write_streaming_status()
 
