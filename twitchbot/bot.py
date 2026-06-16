@@ -64,6 +64,7 @@ class Bot(commands.Bot):
         self.spotify_task = None
         self.lt_task = None
         self._last_spotify_track_id = None
+        self._monitor_started = False
 
         # Recap tracking
         self.stream_start_ts: int | None = None
@@ -274,6 +275,12 @@ class Bot(commands.Bot):
     # ---------------- BOT READY EVENT ----------------
     async def event_ready(self):
         logger.info("Bot ready | %s", self.nick)
+        # event_ready re-fires on every IRC reconnect. Spawn the monitor loop
+        # only once, otherwise each reconnect leaks another loop and they race
+        # over live state (double ad alerts, double recaps).
+        if self._monitor_started:
+            return
+        self._monitor_started = True
         asyncio.create_task(self.monitor_live_status())
 
     # ---------------- RAID AUTO-SHOUTOUT ----------------
