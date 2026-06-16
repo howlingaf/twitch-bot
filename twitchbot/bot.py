@@ -47,9 +47,9 @@ BROADCASTER = "howlingaf"    # the channel owner who streams
 
 
 class Bot(commands.Bot):
-    def __init__(self):
+    def __init__(self, token: str | None = None):
         super().__init__(
-            token=BOT_OAUTH_TOKEN,
+            token=token or BOT_OAUTH_TOKEN,
             client_id=CLIENT_ID,
             nick=BOT_NICK,
             prefix='!',

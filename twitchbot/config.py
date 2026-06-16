@@ -5,6 +5,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 BOT_OAUTH_TOKEN = os.getenv("BOT_OAUTH_TOKEN")
+# Optional .env seed for the bot account's chat refresh token; the persisted
+# store (.twitch_bot_tokens.json, written by `twitch_auth.py bot`) wins.
+BOT_REFRESH_TOKEN = os.getenv("BOT_REFRESH_TOKEN")
 CLIENT_ID = os.getenv("CLIENT_ID")
 CLIENT_SECRET = os.getenv("CLIENT_SECRET")
 ACCESS_TOKEN = os.getenv("ACCESS_TOKEN")

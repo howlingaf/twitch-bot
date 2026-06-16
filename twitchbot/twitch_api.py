@@ -10,12 +10,12 @@ from .config import (
     CLIENT_SECRET,
     BROADCASTER_ID,
 )
-from . import token_store
+from . import oauth, token_store
 from .logger import logger
 
 # Current Helix credentials. Seed from the persisted token store, falling back
 # to .env for a first run before the store exists.
-_stored = token_store.load()
+_stored = token_store.load(token_store.HELIX_TOKEN_PATH)
 _access_token = _stored.get("access_token") or ACCESS_TOKEN
 _refresh_token = _stored.get("refresh_token") or REFRESH_TOKEN
 _refresh_lock = asyncio.Lock()
@@ -32,35 +32,14 @@ async def _refresh_access_token() -> bool:
     """Swap the refresh token for a fresh access token. Returns success."""
     global _access_token, _refresh_token
 
-    if not _refresh_token or not CLIENT_SECRET:
-        logger.error(
-            "Cannot refresh Twitch token: missing refresh token or CLIENT_SECRET. "
-            "Re-run scripts/twitch_auth.py."
-        )
+    data = await oauth.refresh_tokens(_refresh_token, CLIENT_ID, CLIENT_SECRET)
+    if not data:
         return False
-
-    async with aiohttp.ClientSession() as session:
-        async with session.post(
-            "https://id.twitch.tv/oauth2/token",
-            data={
-                "grant_type": "refresh_token",
-                "refresh_token": _refresh_token,
-                "client_id": CLIENT_ID,
-                "client_secret": CLIENT_SECRET,
-            },
-        ) as resp:
-            body = await resp.text()
-            if resp.status != 200:
-                logger.error(
-                    "Twitch token refresh failed. HTTP %s: %s", resp.status, body
-                )
-                return False
-            data = json.loads(body)
 
     _access_token = data["access_token"]
     _refresh_token = data.get("refresh_token", _refresh_token)
-    token_store.save(_access_token, _refresh_token)
-    logger.info("Refreshed Twitch access token.")
+    token_store.save(_access_token, _refresh_token, token_store.HELIX_TOKEN_PATH)
+    logger.info("Refreshed Twitch Helix access token.")
     return True
 
 

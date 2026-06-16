@@ -1,26 +1,30 @@
 #!/usr/bin/env python3
 """One-time Twitch OAuth helper (manual paste mode).
 
-Runs the Authorization Code grant flow once so you obtain a *refresh* token for
-the broadcaster account (a token-generator site only gives a short-lived access
-token with no way to refresh it). The tokens are written to .twitch_tokens.json,
-which the bot reads and keeps refreshed from then on.
+Runs the Authorization Code grant flow once so you obtain a *refresh* token (a
+token-generator site only gives a short-lived access token with no way to
+refresh it). The tokens are written to a store file the bot reads and keeps
+refreshed from then on.
 
-This variant uses the app's registered public redirect URL
-(https://verify.howling.one/twitch/callback) and asks you to paste the code
-back, so the auth can happen in any browser on any machine — handy when the bot
-runs on a headless server.
+Two accounts, both under the same app:
+  broadcaster (default) -> howlingaf, Helix scopes  -> .twitch_tokens.json
+  bot                   -> hairyrugaf, chat scopes   -> .twitch_bot_tokens.json
+
+This uses the app's registered public redirect URL and asks you to paste the
+code back, so the auth can happen in any browser on any machine — handy when the
+bot runs on a headless server.
 
 PREREQUISITES:
   - CLIENT_ID and CLIENT_SECRET of YOUR OWN Twitch app are in .env.
   - REDIRECT_URI below is registered under the app's OAuth Redirect URLs.
 
 RUN:
-  uv run python scripts/twitch_auth.py
+  uv run python scripts/twitch_auth.py            # broadcaster (howlingaf)
+  uv run python scripts/twitch_auth.py bot        # bot account (hairyrugaf)
 
-The scopes requested match what the bot actually uses: starting commercials and
-sending raid shoutouts.
+Log the browser into the matching account before authorizing.
 """
+import argparse
 import json
 import os
 import urllib.error
@@ -33,8 +37,19 @@ from dotenv import load_dotenv
 load_dotenv()
 
 REDIRECT_URI = "https://verify.howling.one/twitch/callback"
-SCOPES = "channel:edit:commercial moderator:manage:shoutouts"
-TOKEN_PATH = Path(__file__).resolve().parent.parent / ".twitch_tokens.json"
+
+ACCOUNTS = {
+    "broadcaster": {
+        "login": "howlingaf",
+        "scopes": "channel:edit:commercial moderator:manage:shoutouts",
+        "filename": ".twitch_tokens.json",
+    },
+    "bot": {
+        "login": "hairyrugaf",
+        "scopes": "chat:read chat:edit",
+        "filename": ".twitch_bot_tokens.json",
+    },
+}
 
 CLIENT_ID = os.getenv("CLIENT_ID") or input("Twitch CLIENT_ID: ").strip()
 CLIENT_SECRET = os.getenv("CLIENT_SECRET") or input("Twitch CLIENT_SECRET: ").strip()
@@ -74,6 +89,20 @@ def _exchange_code_for_tokens(code: str) -> dict:
 
 
 def main():
+    parser = argparse.ArgumentParser(description="One-time Twitch OAuth helper.")
+    parser.add_argument(
+        "account", nargs="?", default="broadcaster", choices=sorted(ACCOUNTS),
+        help="Which account to authorize (default: broadcaster).",
+    )
+    parser.add_argument(
+        "--code",
+        help="Authorization code (or full redirect URL). Lets the exchange run "
+             "non-interactively, e.g. when stdin isn't a TTY.",
+    )
+    args = parser.parse_args()
+    acct = ACCOUNTS[args.account]
+    token_path = Path(__file__).resolve().parent.parent / acct["filename"]
+
     if not CLIENT_ID or not CLIENT_SECRET:
         raise SystemExit("CLIENT_ID and CLIENT_SECRET are required.")
 
@@ -81,19 +110,31 @@ def main():
         "client_id": CLIENT_ID,
         "redirect_uri": REDIRECT_URI,
         "response_type": "code",
-        "scope": SCOPES,
+        "scope": acct["scopes"],
         "force_verify": "true",
     })
 
-    print("\n1) Open this URL in a browser logged in as the BROADCASTER (howlingaf):\n")
+    login = acct["login"].upper()
+    print(f"\n1) Open this URL in a browser logged in as the {args.account.upper()} "
+          f"account ({login}):\n")
     print("   " + auth_url + "\n")
     print("2) Approve the scopes. Twitch redirects to:")
     print("   " + REDIRECT_URI + "?code=<CODE>&scope=...\n")
     print("3) Copy the 'code' value from that address bar (or paste the whole URL).")
     print("   The code is single-use and expires in minutes, so do it promptly.\n")
 
-    raw = input("Paste the code (or full redirect URL) here: ").strip()
-    code = _extract_code(raw)
+    if args.code:
+        raw = args.code
+    else:
+        try:
+            raw = input("Paste the code (or full redirect URL) here: ")
+        except EOFError:
+            raise SystemExit(
+                "\nNo stdin available (e.g. running non-interactively). Re-run with "
+                f"the code:\n  uv run python {Path(__file__).name} {args.account} "
+                "--code '<paste the code or full redirect URL>'"
+            )
+    code = _extract_code(raw.strip())
     if not code:
         raise SystemExit("No code provided.")
 
@@ -101,13 +142,14 @@ def main():
     access = tokens["access_token"]
     refresh = tokens["refresh_token"]
 
-    tmp = TOKEN_PATH.with_suffix(".tmp")
+    tmp = token_path.with_suffix(".tmp")
     tmp.write_text(json.dumps({"access_token": access, "refresh_token": refresh}, indent=2))
-    tmp.rename(TOKEN_PATH)
+    tmp.rename(token_path)
 
-    print("\n✅ Success. Wrote access + refresh tokens to:\n  " + str(TOKEN_PATH))
-    print("Granted scopes:", " ".join(tokens.get("scope", SCOPES.split())))
-    print("Keep the refresh token private. To re-authorize later, rerun this script.")
+    print("\n✅ Success. Wrote access + refresh tokens to:\n  " + str(token_path))
+    print("Granted scopes:", " ".join(tokens.get("scope", acct["scopes"].split())))
+    print(f"Authorize a different account with:  uv run python {Path(__file__).name} "
+          f"{'bot' if args.account == 'broadcaster' else 'broadcaster'}")
 
 
 if __name__ == "__main__":

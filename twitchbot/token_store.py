@@ -1,32 +1,39 @@
-"""Persistent store for the Twitch Helix access/refresh tokens.
+"""Persistent store for Twitch access/refresh tokens.
 
-The access token is short-lived (~4h) and the refresh token can rotate on every
-refresh, so both are written back to disk whenever they change. This file is the
-source of truth at runtime; .env only seeds the very first run before the store
-exists. Written atomically (tmp + rename) so a crash mid-write can't corrupt it.
+Access tokens are short-lived (~4h) and refresh tokens can rotate on every
+refresh, so both are written back to disk whenever they change. These files are
+the source of truth at runtime; .env only seeds the very first run before a
+store exists. Written atomically (tmp + rename) so a crash mid-write can't
+corrupt them.
+
+Two independent token sets are kept, both issued under the same app:
+  - HELIX_TOKEN_PATH: the broadcaster (howlingaf) token used for Helix API calls
+  - BOT_TOKEN_PATH:   the bot account (hairyrugaf) token used for the chat IRC
 """
 import json
 from pathlib import Path
 
 from .logger import logger
 
-TOKEN_PATH = Path(__file__).resolve().parent.parent / ".twitch_tokens.json"
+_BASE = Path(__file__).resolve().parent.parent
+HELIX_TOKEN_PATH = _BASE / ".twitch_tokens.json"
+BOT_TOKEN_PATH = _BASE / ".twitch_bot_tokens.json"
 
 
-def load() -> dict:
+def load(path: Path = HELIX_TOKEN_PATH) -> dict:
     try:
-        return json.loads(TOKEN_PATH.read_text())
+        return json.loads(path.read_text())
     except FileNotFoundError:
         return {}
     except Exception:
-        logger.exception("Could not read token store at %s", TOKEN_PATH)
+        logger.exception("Could not read token store at %s", path)
         return {}
 
 
-def save(access_token: str, refresh_token: str) -> None:
-    tmp = TOKEN_PATH.with_suffix(".tmp")
+def save(access_token: str, refresh_token: str, path: Path = HELIX_TOKEN_PATH) -> None:
+    tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(
         {"access_token": access_token, "refresh_token": refresh_token},
         indent=2,
     ))
-    tmp.rename(TOKEN_PATH)
+    tmp.rename(path)
