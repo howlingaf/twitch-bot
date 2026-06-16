@@ -1,6 +1,7 @@
 logs
 .env
 .spotify_cache
+.twitch_tokens.json
 __pycache__/
 .tio.tokens.json
 .venv

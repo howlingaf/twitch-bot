@@ -6,7 +6,11 @@ load_dotenv()
 
 BOT_OAUTH_TOKEN = os.getenv("BOT_OAUTH_TOKEN")
 CLIENT_ID = os.getenv("CLIENT_ID")
+CLIENT_SECRET = os.getenv("CLIENT_SECRET")
 ACCESS_TOKEN = os.getenv("ACCESS_TOKEN")
+# Optional .env seed for the Helix refresh token; the persisted token store
+# (.twitch_tokens.json, written by scripts/twitch_auth.py) takes precedence.
+REFRESH_TOKEN = os.getenv("REFRESH_TOKEN")
 BROADCASTER_ID = os.getenv("BROADCASTER_ID")
 
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
