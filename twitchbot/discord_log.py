@@ -22,6 +22,18 @@ _FLUSH_INTERVAL = 3
 
 _formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
 
+# Routine token/auth chatter that's noise in the Discord feed — successful
+# refreshes and the self-healing 401 path. These are kept in the on-disk logs
+# but only forwarded to Discord if they're ERROR (i.e. an actual token problem).
+# Matched as lowercase substrings of the log message.
+_SUPPRESS_BELOW_ERROR = (
+    "refreshed twitch",            # Refreshed Twitch Helix/chat access token
+    "chat token valid",           # startup validation
+    "chat token refresh loop",    # loop started
+    "propagated refreshed chat",  # token propagated to the connection
+    "helix 401",                  # 401 -> auto refresh + retry (recovers itself)
+)
+
 
 class DiscordLogHandler(logging.Handler):
     def __init__(self):
@@ -31,6 +43,10 @@ class DiscordLogHandler(logging.Handler):
         self._lock = threading.Lock()
 
     def emit(self, record):
+        if record.levelno < logging.ERROR:
+            msg = record.getMessage().lower()
+            if any(p in msg for p in _SUPPRESS_BELOW_ERROR):
+                return
         try:
             line = self.format(record)
         except Exception:
