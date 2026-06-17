@@ -37,8 +37,6 @@ _SUPPRESS_BELOW_ERROR = (
     "log file handler set to",    # rolled to the new day's file
     "deleted old log file",       # retention purge
     "log maintenance loop",       # loop cancelled on shutdown
-    # startup banner
-    "discord log feed enabled",   # "Discord log feed enabled -> .../twitch-log"
 )
 
 
