@@ -44,6 +44,17 @@ async def _cmd_lt_clear(bot, args):
     return True, "Cleared current problem." if active else "No active problem to clear."
 
 
+async def _cmd_say(bot, args):
+    text = (args or "").strip()
+    if not text:
+        return False, "say requires a message in args."
+    channels = bot.connected_channels
+    if not channels:
+        return False, "Not connected to any Twitch channel."
+    await channels[0].send(text)
+    return True, f"Sent to chat: {text}"
+
+
 async def _cmd_test(bot, args):
     if not RECAP_SECRET or not DISCORD_BOT_URL:
         return False, "RECAP_SECRET or DISCORD_BOT_URL not configured."
@@ -66,6 +77,7 @@ async def _cmd_test(bot, args):
 _COMMANDS = {
     "status": _cmd_status,
     "lt_clear": _cmd_lt_clear,
+    "say": _cmd_say,
     "test": _cmd_test,
 }
 

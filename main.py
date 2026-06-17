@@ -6,9 +6,10 @@ from aiohttp import web
 
 from twitchbot import Bot, overlay_handler, log_maintenance_loop, logger
 from twitchbot.overlay import serve_overlay
-from twitchbot.config import OVERLAY_PORT, CONSOLE_SECRET, CONSOLE_PORT
+from twitchbot.config import OVERLAY_PORT, CONSOLE_SECRET, CONSOLE_PORT, DISCORD_BOT_URL
 from twitchbot.chat_auth import ChatTokenManager, chat_token_refresh_loop
 from twitchbot.console import make_console_app
+from twitchbot.discord_log import DiscordLogHandler, discord_log_loop
 
 
 async def main():
@@ -32,6 +33,14 @@ async def main():
     )
 
     log_maintenance_task = asyncio.create_task(log_maintenance_loop())
+
+    # Forward logs to the Discord bot's #twitch-bot-console feed (opt-in).
+    discord_log_task = None
+    if CONSOLE_SECRET and DISCORD_BOT_URL:
+        _discord_handler = DiscordLogHandler()
+        logger.addHandler(_discord_handler)
+        discord_log_task = asyncio.create_task(discord_log_loop(_discord_handler))
+        logger.info("Discord log feed enabled -> %s/twitch-log", DISCORD_BOT_URL)
 
     # Inbound console API for the Discord bot (localhost-only, opt-in via secret).
     console_runner = None
@@ -60,6 +69,11 @@ async def main():
         chat_refresh_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await chat_refresh_task
+
+        if discord_log_task:
+            discord_log_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await discord_log_task
 
 
 if __name__ == "__main__":

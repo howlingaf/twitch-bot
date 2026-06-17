@@ -40,7 +40,7 @@ async def overlay_handler(websocket):
 
 async def overlay_broadcast(data: dict):
     if not overlay_clients:
-        logger.info("No overlay clients connected for broadcast.")
+        logger.debug("No overlay clients connected for broadcast.")
         return
 
     message = json.dumps(data)
@@ -56,7 +56,7 @@ async def overlay_broadcast(data: dict):
     for ws in dead:
         overlay_clients.discard(ws)
 
-    logger.info(
+    logger.debug(
         "Broadcasted overlay message to %d clients: %s",
         len(overlay_clients),
         data.get("command", list(data.keys())),
