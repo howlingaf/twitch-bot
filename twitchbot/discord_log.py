@@ -32,6 +32,11 @@ _SUPPRESS_BELOW_ERROR = (
     "chat token refresh loop",    # loop started
     "propagated refreshed chat",  # token propagated to the connection
     "helix 401",                  # 401 -> auto refresh + retry (recovers itself)
+    # daily log rotation/cleanup housekeeping
+    "log rotation",               # "Running daily log rotation..." / "...complete."
+    "log file handler set to",    # rolled to the new day's file
+    "deleted old log file",       # retention purge
+    "log maintenance loop",       # loop cancelled on shutdown
 )
 
 
