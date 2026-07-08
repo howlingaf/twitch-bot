@@ -1,10 +1,6 @@
 import asyncio
-import json
 import re
 import time
-from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
-from pathlib import Path
 from urllib.parse import urlparse
 
 import aiohttp
@@ -22,8 +18,6 @@ from .config import (
     RECAP_SECRET,
 )
 from .logger import logger
-
-STREAMING_STATUS_PATH = Path.home() / ".openclaw" / "workspace" / "streaming-status.json"
 from .overlay import overlay_broadcast
 from .twitch_api import (
     log_stream_metadata,
@@ -91,25 +85,6 @@ class Bot(commands.Bot):
             logger.error("Spotify init failed: %s", e)
             self.spotify = None
 
-    # ---------------- STREAMING STATUS FOR OPENCLAW ----------------
-    def _write_streaming_status(self):
-        try:
-            CT = ZoneInfo("America/Chicago")
-            now = datetime.now(CT).isoformat()
-            data = {
-                "live": self.is_live,
-                "lastUpdated": now,
-            }
-            if self.is_live and self.stream_start_ts:
-                data["streamStarted"] = datetime.fromtimestamp(
-                    self.stream_start_ts, tz=CT
-                ).isoformat()
-            tmp = STREAMING_STATUS_PATH.with_suffix(".tmp")
-            tmp.write_text(json.dumps(data, indent=2))
-            tmp.rename(STREAMING_STATUS_PATH)
-        except Exception:
-            logger.exception("Failed to write streaming-status.json")
-
     # ---------------- LIVE STATUS MONITOR ----------------
     # Consecutive confirmed-offline polls required before declaring the stream
     # over. At a 20s poll interval this rides out ~1 minute of API trouble
@@ -156,7 +131,6 @@ class Bot(commands.Bot):
                             "marking live without immediate ad."
                         )
                         self.is_live = True
-                        self._write_streaming_status()
                         await log_stream_metadata()
                         self.ad_task = asyncio.create_task(
                             self._run_ad_loop(run_first_immediately=False)
@@ -164,7 +138,6 @@ class Bot(commands.Bot):
                     else:
                         logger.info("Stream just went LIVE!")
                         self.is_live = True
-                        self._write_streaming_status()
                         await log_stream_metadata()
                         self.ad_task = asyncio.create_task(
                             self._run_ad_loop(run_first_immediately=True)
@@ -192,7 +165,6 @@ class Bot(commands.Bot):
                     )
                     offline_strikes = 0
                     self.is_live = False
-                    self._write_streaming_status()
 
                     # Send recap to Discord bot
                     await self._send_recap()
@@ -233,13 +205,7 @@ class Bot(commands.Bot):
                         images = item.get("album", {}).get("images", [])
                         album_art = images[0]["url"] if images else ""
 
-                        if track_id != self._last_spotify_track_id:
-                            self._last_spotify_track_id = track_id
-                            logger.info(
-                                "Now playing: %s — %s",
-                                item["name"],
-                                ", ".join(a["name"] for a in item["artists"]),
-                            )
+                        self._last_spotify_track_id = track_id
 
                         await overlay_broadcast({
                             "command": "nowplaying",
@@ -392,6 +358,14 @@ class Bot(commands.Bot):
         )
 
     # ---------------- AD LOOP ----------------
+    async def _safe_send(self, channel, content: str):
+        # Ad alerts are best-effort: a send during an IRC reconnect (closing
+        # transport) must not take down the ad loop for the rest of the stream.
+        try:
+            await channel.send(content)
+        except Exception:
+            logger.warning("Failed to send chat message: %r", content, exc_info=True)
+
     async def _run_ad_loop(self, run_first_immediately: bool):
         logger.info(
             "Ad loop started (run_first_immediately=%s).",
@@ -403,69 +377,62 @@ class Bot(commands.Bot):
 
         channel = self.connected_channels[0]
 
+        if not run_first_immediately:
+            logger.info(
+                "Skipping immediate first ad (stream was already live at bot startup "
+                "or run_first_immediately=False)."
+            )
+        first_cycle = run_first_immediately
+
         try:
-            if run_first_immediately and self.is_live:
-                await channel.send("\U0001f4e2 Ad in 1 minute!")
-                logger.info("First ad alert sent immediately on stream start.")
-
-                await asyncio.sleep(60)
-
-                if not self.is_live:
-                    logger.info("Stream ended before first ad started.")
-                    return
-
-                ok = await start_commercial(180)
-                if not ok:
-                    return
-
-                await channel.send("\U0001f4fa Ad starting (3 minutes).")
-
-                await asyncio.sleep(180)
-
-                if not self.is_live:
-                    logger.info("Stream ended during first ad break.")
-                    return
-
-                await channel.send("\u2705 Ad break over!")
-                logger.info("FIRST ad break completed.")
-            else:
-                logger.info(
-                    "Skipping immediate first ad (stream was already live at bot startup "
-                    "or run_first_immediately=False)."
-                )
-
             while self.is_live:
-                await asyncio.sleep(59 * 60)
+                # One ad cycle: alert -> commercial -> wrap-up. An unexpected
+                # error is contained to this cycle so ads rejoin the hourly
+                # schedule instead of dying for the rest of the stream.
+                try:
+                    if not first_cycle:
+                        await asyncio.sleep(59 * 60)
+                        if not self.is_live:
+                            break
 
-                if not self.is_live:
-                    break
+                    # Re-resolve the channel in case IRC reconnected since.
+                    if self.connected_channels:
+                        channel = self.connected_channels[0]
 
-                await channel.send("\U0001f4e2 Ad in 1 minute!")
-                logger.info("Recurring ad alert sent.")
+                    await self._safe_send(channel, "\U0001f4e2 Ad in 1 minute!")
+                    logger.info(
+                        "%s ad alert sent.",
+                        "First" if first_cycle else "Recurring",
+                    )
 
-                await asyncio.sleep(60)
+                    await asyncio.sleep(60)
 
-                if not self.is_live:
-                    break
+                    if not self.is_live:
+                        break
 
-                ok = await start_commercial(180)
-                if not ok:
-                    break
+                    ok = await start_commercial(180)
+                    if not ok:
+                        logger.warning("Ad failed to start; retrying next cycle.")
+                        continue
 
-                await channel.send("\U0001f4fa Ad starting (3 minutes).")
+                    await self._safe_send(channel, "\U0001f4fa Ad starting (3 minutes).")
 
-                await asyncio.sleep(180)
+                    await asyncio.sleep(180)
 
-                if not self.is_live:
-                    break
+                    if not self.is_live:
+                        break
 
-                await channel.send("\u2705 Ad break over!")
-                logger.info("Recurring ad break completed.")
+                    await self._safe_send(channel, "\u2705 Ad break over!")
+                    logger.info("Ad break completed.")
+                except Exception:
+                    logger.exception(
+                        "Ad cycle crashed; rejoining the hourly ad schedule."
+                    )
+                finally:
+                    first_cycle = False
 
         except asyncio.CancelledError:
             logger.info("Ad loop cancelled (stream offline).")
-        except Exception:
-            logger.exception("Fatal error in ad loop")
 
         logger.info("Ad loop stopped (stream offline).")
 
