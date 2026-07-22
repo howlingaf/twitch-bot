@@ -48,10 +48,8 @@ async def _cmd_say(bot, args):
     text = (args or "").strip()
     if not text:
         return False, "say requires a message in args."
-    channels = bot.connected_channels
-    if not channels:
-        return False, "Not connected to any Twitch channel."
-    await channels[0].send(text)
+    if not await bot.say(text):
+        return False, "No path to send the message (Helix send failed and IRC is not connected)."
     return True, f"Sent to chat: {text}"
 
 

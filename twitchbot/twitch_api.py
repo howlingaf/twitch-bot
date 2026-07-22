@@ -147,3 +147,96 @@ async def get_user_id(login: str) -> str | None:
         return None
     users = json.loads(body).get("data", [])
     return users[0]["id"] if users else None
+
+
+# App access token (client credentials) for the Helix chat send endpoint.
+# Twitch only shows the native chat-bot badge on messages sent this way — a
+# user token or IRC PRIVMSG gets no badge. App tokens have no refresh token;
+# a new one is requested on startup and whenever a send hits a 401.
+_app_access_token: str | None = None
+_app_token_lock = asyncio.Lock()
+
+
+async def _fetch_app_access_token() -> bool:
+    global _app_access_token
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://id.twitch.tv/oauth2/token",
+                data={
+                    "client_id": CLIENT_ID,
+                    "client_secret": CLIENT_SECRET,
+                    "grant_type": "client_credentials",
+                },
+            ) as resp:
+                body = await resp.text()
+                if resp.status != 200:
+                    logger.error(
+                        "App access token fetch failed. HTTP %s: %s",
+                        resp.status, body,
+                    )
+                    return False
+                _app_access_token = json.loads(body)["access_token"]
+                logger.info("Fetched Twitch app access token.")
+                return True
+    except aiohttp.ClientError as e:
+        logger.error("App access token fetch error: %s", e)
+        return False
+
+
+async def send_chat_message(text: str, sender_id: str) -> bool:
+    """Send a chat message via Helix as the bot account. Returns success.
+
+    Requires one-time authorization grants on the app: user:bot from the bot
+    account, plus channel:bot from the broadcaster (or the bot being a mod).
+    """
+    global _app_access_token
+
+    payload = {
+        "broadcaster_id": BROADCASTER_ID,
+        "sender_id": sender_id,
+        "message": text,
+    }
+
+    for attempt in range(2):
+        if _app_access_token is None:
+            async with _app_token_lock:
+                if _app_access_token is None and not await _fetch_app_access_token():
+                    return False
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    "https://api.twitch.tv/helix/chat/messages",
+                    headers={
+                        "Authorization": f"Bearer {_app_access_token}",
+                        "Client-Id": CLIENT_ID,
+                    },
+                    json=payload,
+                ) as resp:
+                    body = await resp.text()
+                    if resp.status == 401 and attempt == 0:
+                        logger.warning(
+                            "Helix chat send 401 — fetching a fresh app token "
+                            "and retrying."
+                        )
+                        _app_access_token = None
+                        continue
+                    if resp.status == 200:
+                        data = json.loads(body)["data"][0]
+                        if data.get("is_sent"):
+                            return True
+                        logger.error(
+                            "Helix chat message dropped: %s",
+                            data.get("drop_reason"),
+                        )
+                        return False
+                    logger.error(
+                        "Helix chat send failed. HTTP %s: %s", resp.status, body
+                    )
+                    return False
+        except aiohttp.ClientError as e:
+            logger.error("Helix chat send error: %s", e)
+            return False
+    return False

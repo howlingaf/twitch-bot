@@ -41,12 +41,14 @@ REDIRECT_URI = "https://verify.howling.one/twitch/callback"
 ACCOUNTS = {
     "broadcaster": {
         "login": "howlingaf",
-        "scopes": "channel:edit:commercial moderator:manage:shoutouts",
+        "scopes": "channel:edit:commercial moderator:manage:shoutouts channel:bot",
         "filename": ".twitch_tokens.json",
     },
     "bot": {
+        # user:write:chat + user:bot let the app send chat as this account via
+        # Helix, which is what earns the native chat-bot badge (IRC gets none).
         "login": "hairyrugaf",
-        "scopes": "chat:read chat:edit",
+        "scopes": "chat:read chat:edit user:write:chat user:bot",
         "filename": ".twitch_bot_tokens.json",
     },
 }
@@ -86,6 +88,16 @@ def _exchange_code_for_tokens(code: str) -> dict:
             "and last only minutes — grab a fresh one), or redirect_uri / client "
             "credentials don't match the app."
         )
+
+
+def _token_login(access: str) -> str:
+    """Ask Twitch which account an access token belongs to."""
+    req = urllib.request.Request(
+        "https://id.twitch.tv/oauth2/validate",
+        headers={"Authorization": f"OAuth {access}"},
+    )
+    with urllib.request.urlopen(req) as resp:
+        return json.loads(resp.read()).get("login", "")
 
 
 def main():
@@ -141,6 +153,15 @@ def main():
     tokens = _exchange_code_for_tokens(code)
     access = tokens["access_token"]
     refresh = tokens["refresh_token"]
+
+    actual_login = _token_login(access)
+    if actual_login.lower() != acct["login"].lower():
+        raise SystemExit(
+            f"\n❌ Authorized as {actual_login!r} but expected {acct['login']!r} — "
+            "the browser was logged into the wrong Twitch account. Nothing was "
+            f"saved. Log the browser into {acct['login']} (an incognito window "
+            "works well) and re-run."
+        )
 
     tmp = token_path.with_suffix(".tmp")
     tmp.write_text(json.dumps({"access_token": access, "refresh_token": refresh}, indent=2))

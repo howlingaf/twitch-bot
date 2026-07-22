@@ -24,6 +24,7 @@ from .twitch_api import (
     is_stream_live,
     start_commercial,
     send_shoutout,
+    send_chat_message,
     get_user_id,
 )
 from .helpers import extract_problem_name
@@ -58,6 +59,7 @@ class Bot(commands.Bot):
         self.lt_task = None
         self._last_spotify_track_id = None
         self._monitor_started = False
+        self.bot_user_id: str | None = None
 
         # Recap tracking
         self.stream_start_ts: int | None = None
@@ -281,7 +283,29 @@ class Bot(commands.Bot):
         if self._monitor_started:
             return
         self._monitor_started = True
+        self.bot_user_id = await get_user_id(BOT_NICK)
+        if not self.bot_user_id:
+            logger.warning(
+                "Could not resolve the bot's user ID; chat sends will use "
+                "plain IRC (no bot badge) until it resolves."
+            )
         asyncio.create_task(self.monitor_live_status())
+
+    # ---------------- OUTGOING CHAT ----------------
+    async def say(self, content: str) -> bool:
+        """Send a chat message, preferring Helix (app token) so Twitch shows
+        the native chat-bot badge; falls back to plain IRC if that fails."""
+        if self.bot_user_id is None:
+            self.bot_user_id = await get_user_id(BOT_NICK)
+        if self.bot_user_id:
+            if await send_chat_message(content, self.bot_user_id):
+                return True
+            logger.warning("Helix chat send failed; falling back to IRC.")
+        if self.connected_channels:
+            await self.connected_channels[0].send(content)
+            return True
+        logger.warning("No path to send chat message: %r", content)
+        return False
 
     # ---------------- RAID AUTO-SHOUTOUT ----------------
     async def event_raw_usernotice(self, channel, tags: dict):
@@ -312,8 +336,13 @@ class Bot(commands.Bot):
         if message.echo:
             return
 
+        # Helix-sent messages arrive back over IRC as regular messages (the
+        # echo flag only covers IRC sends), so skip the bot's own account too.
+        if message.author and message.author.name.lower() == BOT_NICK:
+            return
+
         # Scan for LeetCode submission URLs from chatters
-        if self.is_live and message.author.name.lower() != BOT_NICK:
+        if self.is_live:
             for match in _LEETCODE_SUBMISSION_RE.finditer(message.content):
                 slug = match.group(1)
                 url = match.group(0).rstrip("/") + "/"
@@ -358,11 +387,11 @@ class Bot(commands.Bot):
         )
 
     # ---------------- AD LOOP ----------------
-    async def _safe_send(self, channel, content: str):
+    async def _safe_send(self, content: str):
         # Ad alerts are best-effort: a send during an IRC reconnect (closing
         # transport) must not take down the ad loop for the rest of the stream.
         try:
-            await channel.send(content)
+            await self.say(content)
         except Exception:
             logger.warning("Failed to send chat message: %r", content, exc_info=True)
 
@@ -374,8 +403,6 @@ class Bot(commands.Bot):
 
         while not self.connected_channels:
             await asyncio.sleep(1)
-
-        channel = self.connected_channels[0]
 
         if not run_first_immediately:
             logger.info(
@@ -395,11 +422,7 @@ class Bot(commands.Bot):
                         if not self.is_live:
                             break
 
-                    # Re-resolve the channel in case IRC reconnected since.
-                    if self.connected_channels:
-                        channel = self.connected_channels[0]
-
-                    await self._safe_send(channel, "\U0001f4e2 Ad in 1 minute!")
+                    await self._safe_send("\U0001f4e2 Ad in 1 minute!")
                     logger.info(
                         "%s ad alert sent.",
                         "First" if first_cycle else "Recurring",
@@ -415,14 +438,14 @@ class Bot(commands.Bot):
                         logger.warning("Ad failed to start; retrying next cycle.")
                         continue
 
-                    await self._safe_send(channel, "\U0001f4fa Ad starting (3 minutes).")
+                    await self._safe_send("\U0001f4fa Ad starting (3 minutes).")
 
                     await asyncio.sleep(180)
 
                     if not self.is_live:
                         break
 
-                    await self._safe_send(channel, "\u2705 Ad break over!")
+                    await self._safe_send("\u2705 Ad break over!")
                     logger.info("Ad break completed.")
                 except Exception:
                     logger.exception(
@@ -450,7 +473,7 @@ class Bot(commands.Bot):
                     self.lt_task.cancel()
                     logger.info("!lt clear \u2014 cancelled existing LT timer task.")
                 self.current_problem = None
-                await ctx.send("\u2705 Problem cleared!")
+                await self.say("\u2705 Problem cleared!")
                 return
 
             if not url or minutes <= 0 or minutes > 180:
@@ -474,7 +497,7 @@ class Bot(commands.Bot):
                 self.lt_task.cancel()
                 logger.info("!lt \u2014 cancelled previous timer before starting a new one.")
 
-            await ctx.send(f"\u23f0 {minutes}-minute timer started for '{problem_name}'")
+            await self.say(f"\u23f0 {minutes}-minute timer started for '{problem_name}'")
 
             self.lt_task = asyncio.create_task(self._run_lt_timer(ctx, problem_name, minutes))
             logger.info("LT timer started for '%s' (%d minutes)", problem_name, minutes)
@@ -488,10 +511,10 @@ class Bot(commands.Bot):
             final = minutes * 60 - halfway
 
             await asyncio.sleep(halfway)
-            await ctx.send(f"\u23f0 Halfway done with '{problem_name}'")
+            await self.say(f"\u23f0 Halfway done with '{problem_name}'")
 
             await asyncio.sleep(final)
-            await ctx.send(f"\u23f0 Time's up for '{problem_name}'")
+            await self.say(f"\u23f0 Time's up for '{problem_name}'")
             logger.info("LT timer completed for '%s'", problem_name)
 
         except asyncio.CancelledError:
@@ -515,7 +538,7 @@ class Bot(commands.Bot):
                     diff = data['question']['difficulty']
                     link = f"https://leetcode.com{data['link']}"
 
-                    await ctx.send(f"\U0001f4c5 Daily: {title} ({diff}) | {link}")
+                    await self.say(f"\U0001f4c5 Daily: {title} ({diff}) | {link}")
                     logger.info("!daily responded with %s (%s)", title, diff)
 
         except Exception:
@@ -528,7 +551,7 @@ class Bot(commands.Bot):
         try:
             if problem_id is not None:
                 if not problem_id.isdigit():
-                    await ctx.send("\u274c Usage: !problem <number>")
+                    await self.say("\u274c Usage: !problem <number>")
                     logger.info("!problem invalid explicit id %r", problem_id)
                     return
 
@@ -536,11 +559,11 @@ class Bot(commands.Bot):
                     async with session.get(f'https://leetcode-api-pied.vercel.app/problem/{problem_id}') as resp:
                         if resp.status != 200:
                             logger.error("!problem fetch failed: HTTP %s", resp.status)
-                            await ctx.send("\u274c Failed to fetch that problem.")
+                            await self.say("\u274c Failed to fetch that problem.")
                             return
 
                         data = await resp.json()
-                        await ctx.send(
+                        await self.say(
                             f"\U0001f9e9 #{problem_id}: {data['title']} ({data['difficulty']}) | {data['url']}"
                         )
                         logger.info(
@@ -550,7 +573,7 @@ class Bot(commands.Bot):
                 return
 
             if not self.current_problem:
-                await ctx.send("\u274c No problem is currently being worked on.")
+                await self.say("\u274c No problem is currently being worked on.")
                 logger.info("!problem \u2014 no current_problem set")
                 return
 
@@ -568,27 +591,27 @@ class Bot(commands.Bot):
                         async with aiohttp.ClientSession() as session:
                             async with session.get(f'https://leetcode-api-pied.vercel.app/slug/{slug}') as resp:
                                 if resp.status != 200:
-                                    await ctx.send(f"\U0001f50d Working on: {slug.replace('-', ' ').title()} | {target}")
+                                    await self.say(f"\U0001f50d Working on: {slug.replace('-', ' ').title()} | {target}")
                                     logger.info("!problem slug fetch failed")
                                     return
 
                                 data = await resp.json()
-                                await ctx.send(
+                                await self.say(
                                     f"\U0001f9e9 {data['title']} ({data['difficulty']}) | https://leetcode.com/problems/{slug}/"
                                 )
                                 logger.info("!problem returned current problem from slug %s", slug)
                                 return
 
-                await ctx.send(f"\U0001f50d Working on: {target}")
+                await self.say(f"\U0001f50d Working on: {target}")
                 logger.info("!problem returned non-LeetCode URL %s", target)
                 return
 
-            await ctx.send(f"\U0001f50d Working on: {target} (no link available)")
+            await self.say(f"\U0001f50d Working on: {target} (no link available)")
             logger.info("!problem returned generic text target %s", target)
 
         except Exception:
             logger.exception("Error in !problem command")
-            await ctx.send("\u274c Error while retrieving problem info.")
+            await self.say("\u274c Error while retrieving problem info.")
 
     @commands.command(name='test')
     async def test_connection(self, ctx):
@@ -597,7 +620,7 @@ class Bot(commands.Bot):
             return
 
         if not RECAP_SECRET or not DISCORD_BOT_URL:
-            await ctx.send("\u274c RECAP_SECRET or DISCORD_BOT_URL not configured.")
+            await self.say("\u274c RECAP_SECRET or DISCORD_BOT_URL not configured.")
             return
 
         try:
@@ -608,31 +631,31 @@ class Bot(commands.Bot):
                     timeout=aiohttp.ClientTimeout(total=5),
                 ) as resp:
                     if resp.status == 200:
-                        await ctx.send("\u2705 Discord bot connection verified!")
+                        await self.say("\u2705 Discord bot connection verified!")
                     elif resp.status == 401:
-                        await ctx.send("\u274c RECAP_SECRET mismatch — auth rejected by Discord bot.")
+                        await self.say("\u274c RECAP_SECRET mismatch — auth rejected by Discord bot.")
                     else:
-                        await ctx.send(f"\u274c Discord bot returned HTTP {resp.status}")
+                        await self.say(f"\u274c Discord bot returned HTTP {resp.status}")
         except aiohttp.ClientConnectorError:
-            await ctx.send(f"\u274c Cannot reach Discord bot at {DISCORD_BOT_URL}")
+            await self.say(f"\u274c Cannot reach Discord bot at {DISCORD_BOT_URL}")
         except asyncio.TimeoutError:
-            await ctx.send(f"\u274c Discord bot timed out at {DISCORD_BOT_URL}")
+            await self.say(f"\u274c Discord bot timed out at {DISCORD_BOT_URL}")
         except Exception as e:
             logger.exception("[TEST] Unexpected error")
-            await ctx.send(f"\u274c Error: {e}")
+            await self.say(f"\u274c Error: {e}")
 
     @commands.command(name='song')
     async def now_playing(self, ctx):
         logger.info("!song triggered by %s", ctx.author.name)
         try:
             if not self.spotify:
-                await ctx.send("\u274c Spotify is not connected.")
+                await self.say("\u274c Spotify is not connected.")
                 return
 
             data = await asyncio.to_thread(self.spotify.current_playback)
 
             if not data or not data.get("is_playing") or not data.get("item"):
-                await ctx.send("\u274c Nothing is playing right now.")
+                await self.say("\u274c Nothing is playing right now.")
                 return
 
             item = data["item"]
@@ -642,16 +665,16 @@ class Bot(commands.Bot):
             msg = f"\u266b {name} — {artists}"
             if url:
                 msg += f" | {url}"
-            await ctx.send(msg)
+            await self.say(msg)
 
         except Exception:
             logger.exception("Error in !song command")
-            await ctx.send("\u274c Could not fetch current song.")
+            await self.say("\u274c Could not fetch current song.")
 
     @commands.command(name='discord')
     async def get_discord(self, ctx):
         logger.info("!discord triggered by %s", ctx.author.name)
-        await ctx.send('https://discord.gg/tHjeDK8Cd7')
+        await self.say('https://discord.gg/tHjeDK8Cd7')
 
     @commands.command(name="commands")
     async def list_commands(self, ctx):
@@ -670,11 +693,11 @@ class Bot(commands.Bot):
             visible_commands.sort()
 
             if not visible_commands:
-                await ctx.send("No commands available.")
+                await self.say("No commands available.")
                 return
 
             msg = "\U0001f4dc " + " ".join(visible_commands)
-            await ctx.send(msg)
+            await self.say(msg)
 
         except Exception:
             logger.exception("Error in !commands command")
@@ -682,4 +705,4 @@ class Bot(commands.Bot):
     @commands.command(name='project')
     async def get_project(self, ctx):
         logger.info("!project triggered by %s", ctx.author.name)
-        await ctx.send('https://github.com/howlingaf/howlingdb')
+        await self.say('https://github.com/howlingaf/howlingdb')
