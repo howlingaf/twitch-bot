@@ -37,6 +37,10 @@ _SUPPRESS_BELOW_ERROR = (
     "log file handler set to",    # rolled to the new day's file
     "deleted old log file",       # retention purge
     "log maintenance loop",       # loop cancelled on shutdown
+    # overlay websocket clients (OBS/browser sources) connect and drop all the
+    # time; that churn is noise in the feed. Real overlay errors still forward.
+    "overlay connected",
+    "overlay disconnected",
 )
 
 
