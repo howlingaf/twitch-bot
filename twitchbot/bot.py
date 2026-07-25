@@ -5,6 +5,7 @@ from urllib.parse import urlparse
 
 import aiohttp
 import spotipy
+from spotipy.exceptions import SpotifyOauthError
 from spotipy.oauth2 import SpotifyOAuth
 from twitchio.ext import commands
 
@@ -190,13 +191,27 @@ class Bot(commands.Bot):
                 await asyncio.sleep(10)
 
     # ---------------- SPOTIFY NOW-PLAYING MONITOR ----------------
+    # Poll cadence while healthy. After a failure the delay doubles from
+    # SPOTIFY_POLL_INTERVAL up to SPOTIFY_MAX_BACKOFF, so an outage costs a
+    # handful of log lines instead of a traceback every 5s.
+    SPOTIFY_POLL_INTERVAL = 5
+    SPOTIFY_MAX_BACKOFF = 300
+
+    def _spotify_backoff(self, failures: int) -> int:
+        """Delay before retry number `failures` (1-based): 5, 10, 20 ... 300."""
+        return min(
+            self.SPOTIFY_POLL_INTERVAL * 2 ** (failures - 1),
+            self.SPOTIFY_MAX_BACKOFF,
+        )
+
     async def monitor_spotify(self):
         logger.info("Spotify now-playing monitor started.")
+        failures = 0
         try:
             while self.is_live:
                 try:
                     if not self.spotify:
-                        await asyncio.sleep(5)
+                        await asyncio.sleep(self.SPOTIFY_POLL_INTERVAL)
                         continue
 
                     data = await asyncio.to_thread(self.spotify.current_playback)
@@ -228,12 +243,54 @@ class Bot(commands.Bot):
                             "is_playing": False,
                         })
 
+                    if failures:
+                        logger.info(
+                            "Spotify polling recovered after %d failed attempt(s).",
+                            failures,
+                        )
+                        failures = 0
+
                 except asyncio.CancelledError:
                     raise
+                except SpotifyOauthError as e:
+                    # invalid_grant means the refresh token is revoked or
+                    # expired. Retrying can't fix that — it needs a fresh
+                    # authorization-code flow — so stop instead of spinning.
+                    # Any other OAuth error (5xx from the token endpoint, a
+                    # non-JSON body) may well be transient, so let it back off.
+                    if e.error == "invalid_grant":
+                        logger.error(
+                            "Spotify authorization is dead (%s). Re-run the "
+                            "authorization-code flow to refresh .spotify_cache. "
+                            "Stopping now-playing monitor.",
+                            e.error_description or e.error,
+                        )
+                        break
+                    failures += 1
+                    delay = self._spotify_backoff(failures)
+                    logger.warning(
+                        "Spotify OAuth error (%s), attempt %d — retrying in %ds",
+                        e.error_description or e.error, failures, delay,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
                 except Exception:
-                    logger.exception("Error polling Spotify playback")
+                    failures += 1
+                    delay = self._spotify_backoff(failures)
+                    if failures == 1:
+                        logger.exception(
+                            "Error polling Spotify playback — retrying in %ds", delay
+                        )
+                    else:
+                        logger.warning(
+                            "Spotify poll still failing (attempt %d) — "
+                            "retrying in %ds",
+                            failures, delay,
+                        )
+                    await asyncio.sleep(delay)
+                    continue
 
-                await asyncio.sleep(5)
+                await asyncio.sleep(self.SPOTIFY_POLL_INTERVAL)
 
         except asyncio.CancelledError:
             logger.info("Spotify now-playing monitor cancelled.")
