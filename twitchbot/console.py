@@ -41,6 +41,7 @@ async def _cmd_lt_clear(bot, args):
     if bot.lt_task and not bot.lt_task.done():
         bot.lt_task.cancel()
     bot.current_problem = None
+    bot.current_problem_name = None
     return True, "Cleared current problem." if active else "No active problem to clear."
 
 

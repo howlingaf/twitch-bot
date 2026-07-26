@@ -28,7 +28,7 @@ from .twitch_api import (
     send_chat_message,
     get_user_id,
 )
-from .helpers import extract_problem_name
+from .helpers import resolve_problem_name
 
 _LEETCODE_SUBMISSION_RE = re.compile(
     r"https?://(?:www\.)?leetcode\.com/problems/([^/]+)/submissions/(\d+)"
@@ -53,6 +53,7 @@ class Bot(commands.Bot):
         )
 
         self.current_problem = None
+        self.current_problem_name = None
         self.spotify = None
         self.is_live = False
         self.ad_task = None
@@ -66,7 +67,7 @@ class Bot(commands.Bot):
         self.stream_start_ts: int | None = None
         self.chatter_submissions: list[dict] = []
         self._seen_submissions: set[tuple[str, str]] = set()
-        self.stream_problems: list[str] = []  # slugs from !lt commands
+        self.stream_problems: list[str] = []  # LeetCode slugs from !st commands
         self.streamer_links: list[str] = []  # broadcaster-pasted non-skip URLs
         self._seen_streamer_links: set[str] = set()
 
@@ -516,31 +517,45 @@ class Bot(commands.Bot):
 
         logger.info("Ad loop stopped (stream offline).")
 
-    # ---------------- LT TIMER COMMANDS ----------------
-    @commands.command(name='lt')
-    async def leetcode_timer(self, ctx, url: str = None, minutes: int = 30):
-        logger.info("!lt triggered by %s (url=%r, minutes=%r)", ctx.author.name, url, minutes)
+    # ---------------- PROBLEM TIMER COMMANDS ----------------
+    # At or above this many minutes the timer also announces "10 minutes left".
+    TEN_MIN_REMINDER_THRESHOLD = 25
+
+    @commands.command(name='st')
+    async def set_timer(self, ctx, url: str = None, minutes: int = 25):
+        logger.info("!st triggered by %s (url=%r, minutes=%r)", ctx.author.name, url, minutes)
         try:
             if not (ctx.author.is_mod or ctx.author.is_broadcaster or ctx.author.is_vip):
-                logger.info("!lt ignored for %s \u2014 insufficient permissions", ctx.author.name)
+                logger.info("!st ignored for %s \u2014 insufficient permissions", ctx.author.name)
                 return
 
             if url and url.lower() == "clear":
                 if self.lt_task and not self.lt_task.done():
                     self.lt_task.cancel()
-                    logger.info("!lt clear \u2014 cancelled existing LT timer task.")
+                    logger.info("!st clear \u2014 cancelled existing timer task.")
                 self.current_problem = None
-                await self.say("\u2705 Problem cleared!")
+                self.current_problem_name = None
+                await self.say("Problem cleared.")
                 return
 
             if not url or minutes <= 0 or minutes > 180:
-                logger.info("!lt invalid args for %s \u2014 url=%r, minutes=%r", ctx.author.name, url, minutes)
+                logger.info("!st invalid args for %s \u2014 url=%r, minutes=%r", ctx.author.name, url, minutes)
+                return
+
+            problem_name = await resolve_problem_name(url)
+            if problem_name is None:
+                await self.say(
+                    "Unsupported problem link. Use a LeetCode, Codeforces, "
+                    "CSES, or Project Euler URL."
+                )
+                logger.info("!st unsupported problem url %r", url)
                 return
 
             self.current_problem = url
-            problem_name = extract_problem_name(url)
+            self.current_problem_name = problem_name
 
-            # Track problem slug for recap
+            # Track LeetCode slugs for the recap. The recap pipeline is
+            # LeetCode-specific, so other sites are timed but not recapped.
             slug_match = re.search(r'leetcode\.com/problems/([^/]+)', url)
             if slug_match:
                 slug = slug_match.group(1)
@@ -548,36 +563,44 @@ class Bot(commands.Bot):
                     self.stream_problems.append(slug)
                     logger.info("[RECAP] Tracking stream problem: %s", slug)
 
-            # Cancel any timer already running so a new !lt replaces it instead
+            # Cancel any timer already running so a new !st replaces it instead
             # of leaving an orphaned task that keeps firing for the old problem.
             if self.lt_task and not self.lt_task.done():
                 self.lt_task.cancel()
-                logger.info("!lt \u2014 cancelled previous timer before starting a new one.")
+                logger.info("!st \u2014 cancelled previous timer before starting a new one.")
 
-            await self.say(f"\u23f0 {minutes}-minute timer started for '{problem_name}'")
+            await self.say(f"{minutes}-minute timer started for '{problem_name}'")
 
-            self.lt_task = asyncio.create_task(self._run_lt_timer(ctx, problem_name, minutes))
-            logger.info("LT timer started for '%s' (%d minutes)", problem_name, minutes)
+            self.lt_task = asyncio.create_task(self._run_st_timer(problem_name, minutes))
+            logger.info("ST timer started for '%s' (%d minutes)", problem_name, minutes)
 
         except Exception:
-            logger.exception("Error in !lt command")
+            logger.exception("Error in !st command")
 
-    async def _run_lt_timer(self, ctx, problem_name, minutes):
+    async def _run_st_timer(self, problem_name, minutes):
         try:
-            halfway = (minutes * 60) // 2
-            final = minutes * 60 - halfway
+            total = minutes * 60
+            elapsed = 0
 
-            await asyncio.sleep(halfway)
-            await self.say(f"\u23f0 Halfway done with '{problem_name}'")
+            halfway = total // 2
+            await asyncio.sleep(halfway - elapsed)
+            await self.say(f"Halfway done with '{problem_name}'")
+            elapsed = halfway
 
-            await asyncio.sleep(final)
-            await self.say(f"\u23f0 Time's up for '{problem_name}'")
-            logger.info("LT timer completed for '%s'", problem_name)
+            if minutes >= self.TEN_MIN_REMINDER_THRESHOLD:
+                ten_left = total - 10 * 60
+                await asyncio.sleep(ten_left - elapsed)
+                await self.say(f"10 minutes left for '{problem_name}'")
+                elapsed = ten_left
+
+            await asyncio.sleep(total - elapsed)
+            await self.say(f"Time's up for '{problem_name}'")
+            logger.info("ST timer completed for '%s'", problem_name)
 
         except asyncio.CancelledError:
-            logger.info("LT timer cancelled for '%s'", problem_name)
+            logger.info("ST timer cancelled for '%s'", problem_name)
         except Exception:
-            logger.exception("Error in LT timer loop")
+            logger.exception("Error in ST timer loop")
 
     # ---------------- OTHER COMMANDS ----------------
     @commands.command(name='daily')
@@ -608,7 +631,7 @@ class Bot(commands.Bot):
         try:
             if problem_id is not None:
                 if not problem_id.isdigit():
-                    await self.say("\u274c Usage: !problem <number>")
+                    await self.say("Usage: !problem <number>")
                     logger.info("!problem invalid explicit id %r", problem_id)
                     return
 
@@ -616,12 +639,12 @@ class Bot(commands.Bot):
                     async with session.get(f'https://leetcode-api-pied.vercel.app/problem/{problem_id}') as resp:
                         if resp.status != 200:
                             logger.error("!problem fetch failed: HTTP %s", resp.status)
-                            await self.say("\u274c Failed to fetch that problem.")
+                            await self.say("Failed to fetch that problem.")
                             return
 
                         data = await resp.json()
                         await self.say(
-                            f"\U0001f9e9 #{problem_id}: {data['title']} ({data['difficulty']}) | {data['url']}"
+                            f"#{problem_id}: {data['title']} ({data['difficulty']}) | {data['url']}"
                         )
                         logger.info(
                             "!problem responded with #%s: %s (%s)",
@@ -630,45 +653,28 @@ class Bot(commands.Bot):
                 return
 
             if not self.current_problem:
-                await self.say("\u274c No problem is currently being worked on.")
+                await self.say("No problem is currently being worked on.")
                 logger.info("!problem \u2014 no current_problem set")
                 return
 
             target = self.current_problem.strip()
 
             if target.startswith("http://") or target.startswith("https://"):
-                parsed = urlparse(target)
-
-                if "leetcode.com" in parsed.netloc:
-                    import re
-                    match = re.search(r'/problems/([^/]+)/?', parsed.path)
-                    if match:
-                        slug = match.group(1)
-
-                        async with aiohttp.ClientSession() as session:
-                            async with session.get(f'https://leetcode-api-pied.vercel.app/slug/{slug}') as resp:
-                                if resp.status != 200:
-                                    await self.say(f"\U0001f50d Working on: {slug.replace('-', ' ').title()} | {target}")
-                                    logger.info("!problem slug fetch failed")
-                                    return
-
-                                data = await resp.json()
-                                await self.say(
-                                    f"\U0001f9e9 {data['title']} ({data['difficulty']}) | https://leetcode.com/problems/{slug}/"
-                                )
-                                logger.info("!problem returned current problem from slug %s", slug)
-                                return
-
-                await self.say(f"\U0001f50d Working on: {target}")
-                logger.info("!problem returned non-LeetCode URL %s", target)
+                # !st stores the resolved label; resolve on the fly if absent.
+                name = self.current_problem_name or await resolve_problem_name(target)
+                if name:
+                    await self.say(f"Working on: {name} | {target}")
+                else:
+                    await self.say(f"Working on: {target}")
+                logger.info("!problem returned current problem %s", target)
                 return
 
-            await self.say(f"\U0001f50d Working on: {target} (no link available)")
+            await self.say(f"Working on: {target} (no link available)")
             logger.info("!problem returned generic text target %s", target)
 
         except Exception:
             logger.exception("Error in !problem command")
-            await self.say("\u274c Error while retrieving problem info.")
+            await self.say("Error while retrieving problem info.")
 
     @commands.command(name='test')
     async def test_connection(self, ctx):
