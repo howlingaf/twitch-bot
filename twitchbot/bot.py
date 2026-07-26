@@ -28,7 +28,7 @@ from .twitch_api import (
     send_chat_message,
     get_user_id,
 )
-from .helpers import resolve_problem_name
+from .helpers import SUPPORTED_SITES, leetcode_slug, resolve_problem_name
 
 _LEETCODE_SUBMISSION_RE = re.compile(
     r"https?://(?:www\.)?leetcode\.com/problems/([^/]+)/submissions/(\d+)"
@@ -521,6 +521,20 @@ class Bot(commands.Bot):
     # At or above this many minutes the timer also announces "10 minutes left".
     TEN_MIN_REMINDER_THRESHOLD = 25
 
+    def clear_problem(self) -> bool:
+        """Cancel any running timer and forget the current problem.
+
+        Returns True if there was a problem or live timer to clear. Shared by
+        !st clear and the Discord console so the state can't half-clear.
+        """
+        active = bool(self.current_problem) or (self.lt_task and not self.lt_task.done())
+        if self.lt_task and not self.lt_task.done():
+            self.lt_task.cancel()
+            logger.info("Cancelled running problem timer.")
+        self.current_problem = None
+        self.current_problem_name = None
+        return bool(active)
+
     @commands.command(name='st')
     async def set_timer(self, ctx, url: str = None, minutes: int = 25):
         logger.info("!st triggered by %s (url=%r, minutes=%r)", ctx.author.name, url, minutes)
@@ -530,11 +544,7 @@ class Bot(commands.Bot):
                 return
 
             if url and url.lower() == "clear":
-                if self.lt_task and not self.lt_task.done():
-                    self.lt_task.cancel()
-                    logger.info("!st clear \u2014 cancelled existing timer task.")
-                self.current_problem = None
-                self.current_problem_name = None
+                self.clear_problem()
                 await self.say("Problem cleared.")
                 return
 
@@ -544,10 +554,7 @@ class Bot(commands.Bot):
 
             problem_name = await resolve_problem_name(url)
             if problem_name is None:
-                await self.say(
-                    "Unsupported problem link. Use a LeetCode, Codeforces, "
-                    "CSES, or Project Euler URL."
-                )
+                await self.say(f"Unsupported problem link. Use a {SUPPORTED_SITES} URL.")
                 logger.info("!st unsupported problem url %r", url)
                 return
 
@@ -556,12 +563,10 @@ class Bot(commands.Bot):
 
             # Track LeetCode slugs for the recap. The recap pipeline is
             # LeetCode-specific, so other sites are timed but not recapped.
-            slug_match = re.search(r'leetcode\.com/problems/([^/]+)', url)
-            if slug_match:
-                slug = slug_match.group(1)
-                if slug not in self.stream_problems:
-                    self.stream_problems.append(slug)
-                    logger.info("[RECAP] Tracking stream problem: %s", slug)
+            slug = leetcode_slug(url)
+            if slug and slug not in self.stream_problems:
+                self.stream_problems.append(slug)
+                logger.info("[RECAP] Tracking stream problem: %s", slug)
 
             # Cancel any timer already running so a new !st replaces it instead
             # of leaving an orphaned task that keeps firing for the old problem.
@@ -580,21 +585,17 @@ class Bot(commands.Bot):
     async def _run_st_timer(self, problem_name, minutes):
         try:
             total = minutes * 60
-            elapsed = 0
-
-            halfway = total // 2
-            await asyncio.sleep(halfway - elapsed)
-            await self.say(f"Halfway done with '{problem_name}'")
-            elapsed = halfway
-
+            milestones = [(total // 2, f"Halfway done with '{problem_name}'")]
             if minutes >= self.TEN_MIN_REMINDER_THRESHOLD:
-                ten_left = total - 10 * 60
-                await asyncio.sleep(ten_left - elapsed)
-                await self.say(f"10 minutes left for '{problem_name}'")
-                elapsed = ten_left
+                milestones.append((total - 10 * 60, f"10 minutes left for '{problem_name}'"))
+            milestones.append((total, f"Time's up for '{problem_name}'"))
+            milestones.sort()
 
-            await asyncio.sleep(total - elapsed)
-            await self.say(f"Time's up for '{problem_name}'")
+            elapsed = 0
+            for at, message in milestones:
+                await asyncio.sleep(at - elapsed)
+                await self.say(message)
+                elapsed = at
             logger.info("ST timer completed for '%s'", problem_name)
 
         except asyncio.CancelledError:
@@ -660,10 +661,9 @@ class Bot(commands.Bot):
             target = self.current_problem.strip()
 
             if target.startswith("http://") or target.startswith("https://"):
-                # !st stores the resolved label; resolve on the fly if absent.
-                name = self.current_problem_name or await resolve_problem_name(target)
-                if name:
-                    await self.say(f"Working on: {name} | {target}")
+                # !st always stores the resolved label alongside the URL.
+                if self.current_problem_name:
+                    await self.say(f"Working on: {self.current_problem_name} | {target}")
                 else:
                     await self.say(f"Working on: {target}")
                 logger.info("!problem returned current problem %s", target)

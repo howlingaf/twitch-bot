@@ -54,11 +54,11 @@ async def overlay_broadcast(data: dict):
     for ws in overlay_clients:
         try:
             await ws.send(message)
-        except ConnectionClosed as e:
-            logger.info("Overlay disconnected mid-broadcast: %s", e)
-            dead.append(ws)
         except Exception as e:
-            logger.error("Error sending to overlay client: %s", e)
+            if isinstance(e, ConnectionClosed):
+                logger.info("Overlay disconnected mid-broadcast: %s", e)
+            else:
+                logger.error("Error sending to overlay client: %s", e)
             dead.append(ws)
 
     for ws in dead:
