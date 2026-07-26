@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+from websockets.exceptions import ConnectionClosed
 from websockets.http11 import Response
 from websockets.datastructures import Headers
 
@@ -31,6 +32,10 @@ async def overlay_handler(websocket):
     try:
         async for _ in websocket:
             pass
+    except ConnectionClosed as e:
+        # OBS/browser sources drop without a close handshake all the time;
+        # that's disconnect churn (kept out of the Discord feed), not an error.
+        logger.info("Overlay disconnected uncleanly: %s", e)
     except Exception as e:
         logger.error("Overlay websocket error: %s", e)
     finally:
@@ -49,6 +54,9 @@ async def overlay_broadcast(data: dict):
     for ws in overlay_clients:
         try:
             await ws.send(message)
+        except ConnectionClosed as e:
+            logger.info("Overlay disconnected mid-broadcast: %s", e)
+            dead.append(ws)
         except Exception as e:
             logger.error("Error sending to overlay client: %s", e)
             dead.append(ws)
