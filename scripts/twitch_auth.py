@@ -41,7 +41,8 @@ REDIRECT_URI = "https://verify.howling.one/twitch/callback"
 ACCOUNTS = {
     "broadcaster": {
         "login": "howlingaf",
-        "scopes": "channel:edit:commercial moderator:manage:shoutouts channel:bot",
+        "scopes": "channel:edit:commercial moderator:manage:shoutouts channel:bot "
+                  "channel:manage:vips moderator:read:followers",
         "filename": ".twitch_tokens.json",
     },
     "bot": {

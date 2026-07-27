@@ -112,10 +112,6 @@ _SITES = (
     ),
 )
 
-# "LeetCode, Codeforces, CSES, or Project Euler" — for user-facing messages.
-SUPPORTED_SITES = ", ".join(s.display for s in _SITES[:-1]) + f", or {_SITES[-1].display}"
-
-
 def _match_site(url: str) -> tuple[_Site, re.Match] | tuple[None, None]:
     for site in _SITES:
         m = site.pattern.search(url)

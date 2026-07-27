@@ -1,6 +1,7 @@
 import asyncio
 import re
 import time
+from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 import aiohttp
@@ -26,9 +27,11 @@ from .twitch_api import (
     start_commercial,
     send_shoutout,
     send_chat_message,
+    get_follow_info,
+    get_stream_started_at,
     get_user_id,
 )
-from .helpers import SUPPORTED_SITES, leetcode_slug, resolve_problem_name
+from .helpers import leetcode_slug, resolve_problem_name
 
 _LEETCODE_SUBMISSION_RE = re.compile(
     r"https?://(?:www\.)?leetcode\.com/problems/([^/]+)/submissions/(\d+)"
@@ -480,7 +483,7 @@ class Bot(commands.Bot):
                         if not self.is_live:
                             break
 
-                    await self._safe_send("\U0001f4e2 Ad in 1 minute!")
+                    await self._safe_send("Ad in 1 minute!")
                     logger.info(
                         "%s ad alert sent.",
                         "First" if first_cycle else "Recurring",
@@ -496,14 +499,14 @@ class Bot(commands.Bot):
                         logger.warning("Ad failed to start; retrying next cycle.")
                         continue
 
-                    await self._safe_send("\U0001f4fa Ad starting (3 minutes).")
+                    await self._safe_send("Ad starting (3 minutes).")
 
                     await asyncio.sleep(180)
 
                     if not self.is_live:
                         break
 
-                    await self._safe_send("\u2705 Ad break over!")
+                    await self._safe_send("Ad break over!")
                     logger.info("Ad break completed.")
                 except Exception:
                     logger.exception(
@@ -552,14 +555,14 @@ class Bot(commands.Bot):
                 logger.info("!st invalid args for %s \u2014 url=%r, minutes=%r", ctx.author.name, url, minutes)
                 return
 
+            # Unrecognized links still get a timer, just with a generic label
+            # (and no stored name, so !problem falls back to showing the URL).
             problem_name = await resolve_problem_name(url)
-            if problem_name is None:
-                await self.say(f"Unsupported problem link. Use a {SUPPORTED_SITES} URL.")
-                logger.info("!st unsupported problem url %r", url)
-                return
-
             self.current_problem = url
             self.current_problem_name = problem_name
+            if problem_name is None:
+                problem_name = "Problem"
+                logger.info("!st unrecognized problem url %r — using generic label", url)
 
             # Track LeetCode slugs for the recap. The recap pipeline is
             # LeetCode-specific, so other sites are timed but not recapped.
@@ -619,7 +622,7 @@ class Bot(commands.Bot):
                     diff = data['question']['difficulty']
                     link = f"https://leetcode.com{data['link']}"
 
-                    await self.say(f"\U0001f4c5 Daily: {title} ({diff}) | {link}")
+                    await self.say(f"Daily: {title} ({diff}) | {link}")
                     logger.info("!daily responded with %s (%s)", title, diff)
 
         except Exception:
@@ -661,7 +664,7 @@ class Bot(commands.Bot):
             target = self.current_problem.strip()
 
             if target.startswith("http://") or target.startswith("https://"):
-                # !st always stores the resolved label alongside the URL.
+                # !st stores the resolved label for recognized sites only.
                 if self.current_problem_name:
                     await self.say(f"Working on: {self.current_problem_name} | {target}")
                 else:
@@ -683,7 +686,7 @@ class Bot(commands.Bot):
             return
 
         if not RECAP_SECRET or not DISCORD_BOT_URL:
-            await self.say("\u274c RECAP_SECRET or DISCORD_BOT_URL not configured.")
+            await self.say("RECAP_SECRET or DISCORD_BOT_URL not configured.")
             return
 
         try:
@@ -694,45 +697,45 @@ class Bot(commands.Bot):
                     timeout=aiohttp.ClientTimeout(total=5),
                 ) as resp:
                     if resp.status == 200:
-                        await self.say("\u2705 Discord bot connection verified!")
+                        await self.say("Discord bot connection verified!")
                     elif resp.status == 401:
-                        await self.say("\u274c RECAP_SECRET mismatch — auth rejected by Discord bot.")
+                        await self.say("RECAP_SECRET mismatch — auth rejected by Discord bot.")
                     else:
-                        await self.say(f"\u274c Discord bot returned HTTP {resp.status}")
+                        await self.say(f"Discord bot returned HTTP {resp.status}")
         except aiohttp.ClientConnectorError:
-            await self.say(f"\u274c Cannot reach Discord bot at {DISCORD_BOT_URL}")
+            await self.say(f"Cannot reach Discord bot at {DISCORD_BOT_URL}")
         except asyncio.TimeoutError:
-            await self.say(f"\u274c Discord bot timed out at {DISCORD_BOT_URL}")
+            await self.say(f"Discord bot timed out at {DISCORD_BOT_URL}")
         except Exception as e:
             logger.exception("[TEST] Unexpected error")
-            await self.say(f"\u274c Error: {e}")
+            await self.say(f"Error: {e}")
 
     @commands.command(name='song')
     async def now_playing(self, ctx):
         logger.info("!song triggered by %s", ctx.author.name)
         try:
             if not self.spotify:
-                await self.say("\u274c Spotify is not connected.")
+                await self.say("Spotify is not connected.")
                 return
 
             data = await asyncio.to_thread(self.spotify.current_playback)
 
             if not data or not data.get("is_playing") or not data.get("item"):
-                await self.say("\u274c Nothing is playing right now.")
+                await self.say("Nothing is playing right now.")
                 return
 
             item = data["item"]
             name = item["name"]
             artists = ", ".join(a["name"] for a in item["artists"])
             url = item.get("external_urls", {}).get("spotify", "")
-            msg = f"\u266b {name} — {artists}"
+            msg = f"{name} — {artists}"
             if url:
                 msg += f" | {url}"
             await self.say(msg)
 
         except Exception:
             logger.exception("Error in !song command")
-            await self.say("\u274c Could not fetch current song.")
+            await self.say("Could not fetch current song.")
 
     @commands.command(name='discord')
     async def get_discord(self, ctx):
@@ -748,7 +751,7 @@ class Bot(commands.Bot):
                 if name != command.name:
                     continue
 
-                if command.name in {"lt", "commands", "test"}:
+                if command.name in {"st", "commands", "test"}:
                     continue
 
                 visible_commands.append(f"!{command.name}")
@@ -759,7 +762,7 @@ class Bot(commands.Bot):
                 await self.say("No commands available.")
                 return
 
-            msg = "\U0001f4dc " + " ".join(visible_commands)
+            msg = " ".join(visible_commands)
             await self.say(msg)
 
         except Exception:
@@ -769,3 +772,78 @@ class Bot(commands.Bot):
     async def get_project(self, ctx):
         logger.info("!project triggered by %s", ctx.author.name)
         await self.say('https://github.com/howlingaf/howlingdb')
+
+    @staticmethod
+    def _duration_text(*pairs: tuple[int, str]) -> str:
+        """(3, 'hour'), (24, 'minute') -> '3 hours, 24 minutes'; '' if all 0."""
+        return ", ".join(
+            f"{n} {unit}{'s' if n != 1 else ''}" for n, unit in pairs if n
+        )
+
+    @staticmethod
+    def _since(iso_ts: str) -> tuple[datetime, int]:
+        """Parse a Helix ISO timestamp; return it and whole seconds since."""
+        ts = datetime.fromisoformat(iso_ts.replace("Z", "+00:00"))
+        return ts, int((datetime.now(timezone.utc) - ts).total_seconds())
+
+    @commands.command(name='pc')
+    async def pc_specs(self, ctx):
+        logger.info("!pc triggered by %s", ctx.author.name)
+        await self.say(
+            "PC Specs -> Ultra 7 255HX (20C) | RTX 5070 Ti 16GB | "
+            "32GB DDR5-5600 | 1TB NVMe | Win11"
+        )
+
+    @commands.command(name='font')
+    async def font(self, ctx):
+        logger.info("!font triggered by %s", ctx.author.name)
+        await self.say("Terminus (TTF)")
+
+    @commands.command(name='followage')
+    async def followage(self, ctx):
+        logger.info("!followage triggered by %s", ctx.author.name)
+        try:
+            user_id = getattr(ctx.author, "id", None) or await get_user_id(ctx.author.name)
+            if not user_id:
+                return
+
+            ok, followed_at = await get_follow_info(user_id)
+            if not ok:
+                await self.say("Could not check followage right now.")
+                return
+            if not followed_at:
+                await self.say(f"{ctx.author.name} is not following the channel.")
+                return
+
+            followed, seconds = self._since(followed_at)
+            years, rem = divmod(seconds // 86400, 365)
+            months, days = divmod(rem, 30)
+            duration = self._duration_text(
+                (years, "year"), (months, "month"), (days, "day")
+            ) or "less than a day"
+            await self.say(
+                f"{ctx.author.name} has been following for {duration} "
+                f"(since {followed:%Y-%m-%d})."
+            )
+
+        except Exception:
+            logger.exception("Error in !followage command")
+
+    @commands.command(name='uptime')
+    async def uptime(self, ctx):
+        logger.info("!uptime triggered by %s", ctx.author.name)
+        try:
+            started_at = await get_stream_started_at()
+            if not started_at:
+                await self.say("Stream is offline.")
+                return
+
+            _, seconds = self._since(started_at)
+            hours, rem = divmod(seconds, 3600)
+            duration = self._duration_text(
+                (hours, "hour"), (rem // 60, "minute")
+            ) or "less than a minute"
+            await self.say(f"Live for {duration}.")
+
+        except Exception:
+            logger.exception("Error in !uptime command")

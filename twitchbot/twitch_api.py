@@ -140,6 +140,35 @@ async def send_shoutout(to_broadcaster_id: str):
     return False
 
 
+async def get_stream_started_at() -> str | None:
+    """ISO start time of the current stream, or None if offline/unknown."""
+    url = f"https://api.twitch.tv/helix/streams?user_id={BROADCASTER_ID}"
+    status, body = await _twitch_request("GET", url)
+    if status != 200:
+        logger.error("Stream start lookup failed: HTTP %s", status)
+        return None
+    data = json.loads(body).get("data", [])
+    return data[0]["started_at"] if data else None
+
+
+async def get_follow_info(user_id: str) -> tuple[bool, str | None]:
+    """Look up when user_id followed the channel.
+
+    Returns (ok, followed_at): ok False means the lookup itself failed;
+    followed_at is the ISO timestamp, or None if they don't follow.
+    """
+    url = (
+        "https://api.twitch.tv/helix/channels/followers"
+        f"?broadcaster_id={BROADCASTER_ID}&user_id={user_id}"
+    )
+    status, body = await _twitch_request("GET", url)
+    if status != 200:
+        logger.error("Follow lookup failed. HTTP %s: %s", status, body)
+        return False, None
+    data = json.loads(body).get("data", [])
+    return True, data[0]["followed_at"] if data else None
+
+
 async def get_user_id(login: str) -> str | None:
     url = f"https://api.twitch.tv/helix/users?login={login}"
     status, body = await _twitch_request("GET", url)
