@@ -75,13 +75,21 @@ async def _twitch_request(method: str, url: str, **kwargs):
     return None, ""
 
 
-async def log_stream_metadata():
+async def fetch_stream_metadata() -> dict | None:
+    """Log the current stream's Helix metadata and return it (None if offline).
+
+    Returns what it logs so a caller can read a field — the stream title, for
+    the recap heading — without a second identical request.
+    """
     url = f"https://api.twitch.tv/helix/streams?user_id={BROADCASTER_ID}"
     status, body = await _twitch_request("GET", url)
-    if status == 200:
-        logger.info("STREAM METADATA:\n%s", json.dumps(json.loads(body), indent=2))
-    else:
+    if status != 200:
         logger.error("Stream metadata fetch failed: HTTP %s", status)
+        return None
+    data = json.loads(body)
+    logger.info("STREAM METADATA:\n%s", json.dumps(data, indent=2))
+    entries = data.get("data", [])
+    return entries[0] if entries else None
 
 
 async def is_stream_live():

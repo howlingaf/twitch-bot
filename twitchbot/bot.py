@@ -22,7 +22,7 @@ from .config import (
 from .logger import logger
 from .overlay import overlay_broadcast
 from .twitch_api import (
-    log_stream_metadata,
+    fetch_stream_metadata,
     is_stream_live,
     start_commercial,
     send_shoutout,
@@ -73,6 +73,7 @@ class Bot(commands.Bot):
         self.stream_problems: list[str] = []  # LeetCode slugs from !st commands
         self.streamer_links: list[str] = []  # broadcaster-pasted non-skip URLs
         self._seen_streamer_links: set[str] = set()
+        self.stream_title: str = ""  # heads the Discord recap embed
 
         self.init_spotify()
 
@@ -138,14 +139,14 @@ class Bot(commands.Bot):
                             "marking live without immediate ad."
                         )
                         self.is_live = True
-                        await log_stream_metadata()
+                        await self._capture_stream_title()
                         self.ad_task = asyncio.create_task(
                             self._run_ad_loop(run_first_immediately=False)
                         )
                     else:
                         logger.info("Stream just went LIVE!")
                         self.is_live = True
-                        await log_stream_metadata()
+                        await self._capture_stream_title()
                         self.ad_task = asyncio.create_task(
                             self._run_ad_loop(run_first_immediately=True)
                         )
@@ -304,6 +305,16 @@ class Bot(commands.Bot):
             logger.info("Spotify now-playing monitor stopped.")
 
     # ---------------- RECAP ----------------
+    async def _capture_stream_title(self):
+        """Remember the stream's title while it's still live.
+
+        The recap is built after the stream ends, and Helix returns nothing for
+        an offline channel — so reading the title at that point is too late. A
+        title changed mid-stream isn't picked up; this is the one at go-live.
+        """
+        meta = await fetch_stream_metadata()
+        self.stream_title = (meta or {}).get("title") or ""
+
     async def _send_recap(self):
         """POST recap data to the Discord bot."""
         if not RECAP_SECRET or not DISCORD_BOT_URL:
@@ -318,6 +329,7 @@ class Bot(commands.Bot):
             "stream_end": stream_end,
             "chatter_submissions": self.chatter_submissions,
             "streamer_links": self.streamer_links,
+            "stream_title": self.stream_title,
         }
 
         try:
