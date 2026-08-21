@@ -41,7 +41,11 @@ REDIRECT_URI = "https://verify.howling.one/twitch/callback"
 ACCOUNTS = {
     "broadcaster": {
         "login": "howlingaf",
-        "scopes": "channel:edit:commercial moderator:manage:shoutouts channel:bot "
+        # channel:read:ads is read-only: it exposes next_ad_at and
+        # preroll_free_time, so ad timing can follow Twitch's own schedule and
+        # the pre-roll bank instead of a local guess.
+        "scopes": "channel:edit:commercial channel:read:ads "
+                  "moderator:manage:shoutouts channel:bot "
                   "channel:manage:vips moderator:read:followers",
         "filename": ".twitch_tokens.json",
     },
