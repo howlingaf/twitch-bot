@@ -112,7 +112,13 @@ async def is_stream_live():
     return live
 
 
-async def start_commercial(length: int = 180) -> bool:
+async def start_commercial(length: int = 180) -> int:
+    """Start an ad break. Returns the length Twitch ACTUALLY served, 0 on failure.
+
+    The requested length is a request, not a guarantee — Twitch may serve a
+    shorter break, and the caller has to time its "ad over" message off what
+    came back rather than what it asked for.
+    """
     payload = {
         "broadcaster_id": BROADCASTER_ID,
         "length": length,
@@ -124,10 +130,19 @@ async def start_commercial(length: int = 180) -> bool:
     )
     if status != 200:
         logger.error("Failed to start ad. HTTP %s: %s", status, body)
-        return False
+        return 0
 
     logger.info("Ad started successfully. Response: %s", body)
-    return True
+    try:
+        entry = (json.loads(body).get("data") or [{}])[0]
+        served = int(entry.get("length") or 0)
+    except (ValueError, TypeError, IndexError):
+        served = 0
+    if served and served != length:
+        logger.warning("Twitch served a %ss ad, not the %ss requested.", served, length)
+    # A 200 with no usable length still means the break started; fall back to
+    # what we asked for rather than treating it as a failure.
+    return served or length
 
 
 async def send_shoutout(to_broadcaster_id: str):

@@ -33,6 +33,21 @@ from .twitch_api import (
 )
 from .helpers import leetcode_slug, resolve_problem_name
 
+# Ad cadence. The period is measured warning-to-warning, so a break lands at
+# the same point in every hour of a stream.
+AD_PERIOD_SECONDS = 60 * 60
+AD_WARNING_SECONDS = 60
+AD_LENGTH_SECONDS = 180
+
+
+def _ad_length_label(seconds: int) -> str:
+    """'3 minutes' / '90 seconds' — Twitch can serve a length we didn't ask for."""
+    if seconds % 60 == 0:
+        minutes = seconds // 60
+        return f"{minutes} minute" + ("" if minutes == 1 else "s")
+    return f"{seconds} seconds"
+
+
 _LEETCODE_SUBMISSION_RE = re.compile(
     r"https?://(?:www\.)?leetcode\.com/problems/([^/]+)/submissions/(\d+)"
 )
@@ -483,6 +498,11 @@ class Bot(commands.Bot):
                 "or run_first_immediately=False)."
             )
         first_cycle = run_first_immediately
+        # When the NEXT cycle's warning is due. Anchored to the start of each
+        # cycle rather than the end of its ad, so the 60s warning and the ad
+        # itself don't push every following break later — that drift made the
+        # "hourly" schedule run every 63 minutes.
+        next_warning_at = time.monotonic()
 
         try:
             while self.is_live:
@@ -491,9 +511,11 @@ class Bot(commands.Bot):
                 # schedule instead of dying for the rest of the stream.
                 try:
                     if not first_cycle:
-                        await asyncio.sleep(59 * 60)
+                        await asyncio.sleep(max(0, next_warning_at - time.monotonic()))
                         if not self.is_live:
                             break
+
+                    next_warning_at = time.monotonic() + AD_PERIOD_SECONDS
 
                     await self._safe_send("Ad in 1 minute!")
                     logger.info(
@@ -501,25 +523,28 @@ class Bot(commands.Bot):
                         "First" if first_cycle else "Recurring",
                     )
 
-                    await asyncio.sleep(60)
+                    await asyncio.sleep(AD_WARNING_SECONDS)
 
                     if not self.is_live:
                         break
 
-                    ok = await start_commercial(180)
-                    if not ok:
+                    served = await start_commercial(AD_LENGTH_SECONDS)
+                    if not served:
+                        # Chat has already been promised an ad, so say it isn't
+                        # coming rather than leaving the warning dangling.
+                        await self._safe_send("Ad didn't start \u2014 no break this time.")
                         logger.warning("Ad failed to start; retrying next cycle.")
                         continue
 
-                    await self._safe_send("Ad starting (3 minutes).")
+                    await self._safe_send(f"Ad starting ({_ad_length_label(served)}).")
 
-                    await asyncio.sleep(180)
+                    await asyncio.sleep(served)
 
                     if not self.is_live:
                         break
 
                     await self._safe_send("Ad break over!")
-                    logger.info("Ad break completed.")
+                    logger.info("Ad break completed (%ss).", served)
                 except Exception:
                     logger.exception(
                         "Ad cycle crashed; rejoining the hourly ad schedule."
