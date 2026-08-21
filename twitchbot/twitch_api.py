@@ -145,6 +145,23 @@ async def start_commercial(length: int = 180) -> int:
     return served or length
 
 
+async def get_ad_schedule() -> dict | None:
+    """Twitch's own view of ads: next_ad_at, duration, preroll_free_time, snoozes.
+
+    Needs channel:read:ads. Every field reads 0 while the channel is offline,
+    so it only says anything during a stream.
+    """
+    url = f"https://api.twitch.tv/helix/channels/ads?broadcaster_id={BROADCASTER_ID}"
+    status, body = await _twitch_request("GET", url)
+    if status != 200:
+        logger.error("Ad schedule lookup failed. HTTP %s: %s", status, body)
+        return None
+    try:
+        return (json.loads(body).get("data") or [{}])[0]
+    except (ValueError, IndexError):
+        return None
+
+
 async def send_shoutout(to_broadcaster_id: str):
     params = {
         "from_broadcaster_id": BROADCASTER_ID,

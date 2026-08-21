@@ -25,6 +25,7 @@ from .twitch_api import (
     fetch_stream_metadata,
     is_stream_live,
     start_commercial,
+    get_ad_schedule,
     send_shoutout,
     send_chat_message,
     get_follow_info,
@@ -38,6 +39,30 @@ from .helpers import leetcode_slug, resolve_problem_name
 AD_PERIOD_SECONDS = 60 * 60
 AD_WARNING_SECONDS = 60
 AD_LENGTH_SECONDS = 180
+
+
+async def _log_ad_state(label: str) -> dict | None:
+    """Record Twitch's ad state, and shout if automation is scheduling ads.
+
+    With Ad Manager off the bot is the only thing that can start a break, which
+    is what keeps the chat warning honest. A non-zero next_ad_at means that is
+    no longer true — an ad is coming that nobody announced.
+    """
+    state = await get_ad_schedule()
+    if not state:
+        return None
+    logger.info(
+        "Ad state (%s): preroll_free_time=%ss next_ad_at=%s snoozes=%s",
+        label, state.get("preroll_free_time"), state.get("next_ad_at"),
+        state.get("snooze_count"),
+    )
+    if state.get("next_ad_at"):
+        logger.warning(
+            "Twitch has an ad scheduled at %s that the bot did not trigger — "
+            "Ad Manager looks re-enabled, so that break won't be announced.",
+            state.get("next_ad_at"),
+        )
+    return state
 
 
 def _ad_length_label(seconds: int) -> str:
@@ -528,6 +553,7 @@ class Bot(commands.Bot):
                     if not self.is_live:
                         break
 
+                    before = await _log_ad_state("pre-break")
                     served = await start_commercial(AD_LENGTH_SECONDS)
                     if not served:
                         # Chat has already been promised an ad, so say it isn't
@@ -544,7 +570,20 @@ class Bot(commands.Bot):
                         break
 
                     await self._safe_send("Ad break over!")
-                    logger.info("Ad break completed (%ss).", served)
+                    after = await _log_ad_state("post-break")
+                    # What a break actually buys, measured rather than assumed —
+                    # this is the number that decides how far the period can be
+                    # stretched before pre-rolls come back.
+                    if before and after:
+                        gained = (after.get("preroll_free_time") or 0) \
+                            - (before.get("preroll_free_time") or 0)
+                        logger.info(
+                            "Ad break completed (%ss): preroll_free_time %s -> %s (%+ds).",
+                            served, before.get("preroll_free_time"),
+                            after.get("preroll_free_time"), gained,
+                        )
+                    else:
+                        logger.info("Ad break completed (%ss).", served)
                 except Exception:
                     logger.exception(
                         "Ad cycle crashed; rejoining the hourly ad schedule."
