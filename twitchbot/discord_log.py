@@ -1,5 +1,10 @@
 """Forward the bot's logs to the Discord bot's /twitch-log endpoint.
 
+WARNING and above only. The feed exists so problems surface without ssh'ing
+into the box; routine INFO (ad cycles, recap captures, Spotify monitor state)
+is operational chatter that lives in the on-disk logs — the owner asked for it
+out of the channel.
+
 A logging.Handler buffers formatted log lines (thread-safe — log calls come
 from the event loop and from asyncio.to_thread workers), and an async loop
 flushes the buffer in batches every few seconds. The Discord bot batches again
@@ -22,25 +27,11 @@ _FLUSH_INTERVAL = 3
 
 _formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
 
-# Routine token/auth chatter that's noise in the Discord feed — successful
-# refreshes and the self-healing 401 path. These are kept in the on-disk logs
-# but only forwarded to Discord if they're ERROR (i.e. an actual token problem).
-# Matched as lowercase substrings of the log message.
+# WARNING-level chatter that still recovers on its own — kept on disk, only
+# forwarded to Discord at ERROR (i.e. when it's an actual problem). Matched as
+# lowercase substrings of the log message.
 _SUPPRESS_BELOW_ERROR = (
-    "refreshed twitch",            # Refreshed Twitch Helix/chat access token
-    "chat token valid",           # startup validation
-    "chat token refresh loop",    # loop started
-    "propagated refreshed chat",  # token propagated to the connection
     "helix 401",                  # 401 -> auto refresh + retry (recovers itself)
-    # daily log rotation/cleanup housekeeping
-    "log rotation",               # "Running daily log rotation..." / "...complete."
-    "log file handler set to",    # rolled to the new day's file
-    "deleted old log file",       # retention purge
-    "log maintenance loop",       # loop cancelled on shutdown
-    # overlay websocket clients (OBS/browser sources) connect and drop all the
-    # time; that churn is noise in the feed. Real overlay errors still forward.
-    "overlay connected",
-    "overlay disconnected",
 )
 
 
@@ -52,6 +43,8 @@ class DiscordLogHandler(logging.Handler):
         self._lock = threading.Lock()
 
     def emit(self, record):
+        if record.levelno < logging.WARNING:
+            return
         if record.levelno < logging.ERROR:
             msg = record.getMessage().lower()
             if any(p in msg for p in _SUPPRESS_BELOW_ERROR):
