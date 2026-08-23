@@ -33,7 +33,7 @@ from .twitch_api import (
     get_user_id,
 )
 from .helpers import leetcode_slug, resolve_problem_name
-from .notify import dm_owner
+from .notify import alert_owner
 
 # Ad cadence. The period is measured warning-to-warning, so a break lands at
 # the same point in every hour of a stream.
@@ -516,7 +516,7 @@ class Bot(commands.Bot):
             logger.warning("Failed to send chat message: %r", content, exc_info=True)
 
     async def _alert_ads_down(self) -> None:
-        """DM the owner, but only once pre-rolls are actually back.
+        """Ping the owner in the console channel, once pre-rolls are actually back.
 
         Checked after the retries rather than at the moment of failure: the bank
         still reads a couple of minutes at that point, so an immediate check
@@ -531,7 +531,7 @@ class Bot(commands.Bot):
                 banked,
             )
             return
-        await dm_owner(
+        await alert_owner(
             "⚠️ Twitch ad break failed after "
             f"{AD_MAX_ATTEMPTS} attempts and pre-rolls are back on — viewers "
             "joining now are getting a pre-roll. Next automatic attempt is at "
