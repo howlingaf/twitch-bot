@@ -33,12 +33,19 @@ from .twitch_api import (
     get_user_id,
 )
 from .helpers import leetcode_slug, resolve_problem_name
+from .notify import dm_owner
 
 # Ad cadence. The period is measured warning-to-warning, so a break lands at
 # the same point in every hour of a stream.
 AD_PERIOD_SECONDS = 60 * 60
 AD_WARNING_SECONDS = 60
 AD_LENGTH_SECONDS = 180
+# A break that doesn't run costs the whole hour: the pre-roll bank is topped up
+# with about five seconds to spare, so it lapses minutes later. Retries stay
+# inside the hour and never touch chat — viewers don't need the bot's plumbing,
+# and a warning is only ever sent when an ad is genuinely about to run.
+AD_RETRY_DELAY_SECONDS = 5 * 60
+AD_MAX_ATTEMPTS = 3
 
 
 async def _log_ad_state(label: str) -> dict | None:
@@ -508,6 +515,29 @@ class Bot(commands.Bot):
         except Exception:
             logger.warning("Failed to send chat message: %r", content, exc_info=True)
 
+    async def _alert_ads_down(self) -> None:
+        """DM the owner, but only once pre-rolls are actually back.
+
+        Checked after the retries rather than at the moment of failure: the bank
+        still reads a couple of minutes at that point, so an immediate check
+        would say everything is fine. A state we can't read at all counts as
+        bad news — the ad definitely didn't run.
+        """
+        state = await get_ad_schedule()
+        banked = (state or {}).get("preroll_free_time")
+        if state is not None and banked:
+            logger.info(
+                "Ad break missed but %ss of pre-roll cover remains; not alerting.",
+                banked,
+            )
+            return
+        await dm_owner(
+            "⚠️ Twitch ad break failed after "
+            f"{AD_MAX_ATTEMPTS} attempts and pre-rolls are back on — viewers "
+            "joining now are getting a pre-roll. Next automatic attempt is at "
+            "the top of the next hour."
+        )
+
     async def _run_ad_loop(self, run_first_immediately: bool):
         logger.info(
             "Ad loop started (run_first_immediately=%s).",
@@ -527,7 +557,13 @@ class Bot(commands.Bot):
         # cycle rather than the end of its ad, so the 60s warning and the ad
         # itself don't push every following break later — that drift made the
         # "hourly" schedule run every 63 minutes.
-        next_warning_at = time.monotonic()
+        #
+        # A full period out when the first ad is meant to be skipped: the loop
+        # only skips the WAIT on its first cycle, so anchoring at "now" would
+        # have run an ad immediately on every restart into a live stream —
+        # the one case run_first_immediately=False exists to prevent.
+        next_warning_at = time.monotonic() + (
+            0 if run_first_immediately else AD_PERIOD_SECONDS)
 
         try:
             while self.is_live:
@@ -541,25 +577,51 @@ class Bot(commands.Bot):
                             break
 
                     next_warning_at = time.monotonic() + AD_PERIOD_SECONDS
+                    served, before = 0, None
 
-                    await self._safe_send("Ad in 1 minute!")
-                    logger.info(
-                        "%s ad alert sent.",
-                        "First" if first_cycle else "Recurring",
-                    )
+                    for attempt in range(1, AD_MAX_ATTEMPTS + 1):
+                        if not self.is_live:
+                            break
 
-                    await asyncio.sleep(AD_WARNING_SECONDS)
+                        # Pre-flight. A read of the ad schedule proves the token
+                        # is valid and Helix is reachable — the two things that
+                        # would otherwise let a warning go out with no ad behind
+                        # it. It can't prove the commercial call will succeed,
+                        # but it catches the failures that actually happen.
+                        before = await _log_ad_state(f"pre-break attempt {attempt}")
+                        if before is None:
+                            logger.warning(
+                                "Ad pre-flight failed (attempt %d/%d); no warning sent.",
+                                attempt, AD_MAX_ATTEMPTS,
+                            )
+                            await asyncio.sleep(AD_RETRY_DELAY_SECONDS)
+                            continue
+
+                        await self._safe_send("Ad in 1 minute!")
+                        logger.info(
+                            "%s ad alert sent (attempt %d).",
+                            "First" if first_cycle else "Recurring", attempt,
+                        )
+
+                        await asyncio.sleep(AD_WARNING_SECONDS)
+                        if not self.is_live:
+                            break
+
+                        served = await start_commercial(AD_LENGTH_SECONDS)
+                        if served:
+                            break
+
+                        logger.warning(
+                            "Ad failed to start (attempt %d/%d).",
+                            attempt, AD_MAX_ATTEMPTS,
+                        )
+                        await asyncio.sleep(AD_RETRY_DELAY_SECONDS)
 
                     if not self.is_live:
                         break
 
-                    before = await _log_ad_state("pre-break")
-                    served = await start_commercial(AD_LENGTH_SECONDS)
                     if not served:
-                        # Chat has already been promised an ad, so say it isn't
-                        # coming rather than leaving the warning dangling.
-                        await self._safe_send("Ad didn't start \u2014 no break this time.")
-                        logger.warning("Ad failed to start; retrying next cycle.")
+                        await self._alert_ads_down()
                         continue
 
                     await self._safe_send(f"Ad starting ({_ad_length_label(served)}).")
