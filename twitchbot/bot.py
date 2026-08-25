@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 import aiohttp
+import requests
 import spotipy
 from spotipy.exceptions import SpotifyOauthError
 from spotipy.oauth2 import SpotifyOAuth
@@ -323,6 +324,23 @@ class Bot(commands.Bot):
                     logger.warning(
                         "Spotify OAuth error (%s), attempt %d — retrying in %ds",
                         e.error_description or e.error, failures, delay,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                except requests.exceptions.RequestException as e:
+                    # Connection resets, timeouts, DNS hiccups. These are
+                    # routine on a long-lived poll and self-heal on retry, so
+                    # a one-liner is plenty — the traceback is a hundred lines
+                    # of urllib3 internals that says nothing we don't know.
+                    failures += 1
+                    delay = self._spotify_backoff(failures)
+                    # An isolated blip is INFO; only a run of them is worth
+                    # surfacing in the Discord feed.
+                    log = logger.info if failures == 1 else logger.warning
+                    log(
+                        "Spotify poll network error (%s: %s), attempt %d — "
+                        "retrying in %ds",
+                        type(e).__name__, e, failures, delay,
                     )
                     await asyncio.sleep(delay)
                     continue
