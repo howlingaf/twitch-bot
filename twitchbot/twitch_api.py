@@ -162,6 +162,27 @@ async def get_ad_schedule() -> dict | None:
         return None
 
 
+async def get_latest_vod() -> dict | None:
+    """The newest past-broadcast VOD: {url, duration, title, created_at}, or None.
+
+    Twitch publishes the VOD a little after the stream ends, so right at
+    offline this can return the PREVIOUS stream's VOD — callers compare
+    created_at against the stream they mean.
+    """
+    url = (f"https://api.twitch.tv/helix/videos?user_id={BROADCASTER_ID}"
+           "&type=archive&first=1")
+    status, body = await _twitch_request("GET", url)
+    if status != 200:
+        logger.error("VOD lookup failed. HTTP %s: %s", status, body)
+        return None
+    vids = json.loads(body).get("data") or []
+    if not vids:
+        return None
+    v = vids[0]
+    return {"url": v.get("url"), "duration": v.get("duration"),
+            "title": v.get("title"), "created_at": v.get("created_at")}
+
+
 async def send_shoutout(to_broadcaster_id: str):
     params = {
         "from_broadcaster_id": BROADCASTER_ID,

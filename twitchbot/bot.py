@@ -27,6 +27,7 @@ from .twitch_api import (
     is_stream_live,
     start_commercial,
     get_ad_schedule,
+    get_latest_vod,
     send_shoutout,
     send_chat_message,
     get_follow_info,
@@ -34,7 +35,7 @@ from .twitch_api import (
     get_user_id,
 )
 from .helpers import leetcode_slug, resolve_problem_name
-from .notify import alert_owner
+from .notify import alert_owner, stream_alert, stream_alert_vod
 
 # Ad cadence. The period is measured warning-to-warning, so a break lands at
 # the same point in every hour of a stream.
@@ -47,6 +48,16 @@ AD_LENGTH_SECONDS = 180
 # and a warning is only ever sent when an ad is genuinely about to run.
 AD_RETRY_DELAY_SECONDS = 5 * 60
 AD_MAX_ATTEMPTS = 3
+
+
+def _within(iso_a: str, iso_b: str, seconds: int) -> bool:
+    """Two Twitch ISO-8601 timestamps closer together than `seconds`."""
+    try:
+        a = datetime.fromisoformat(iso_a.replace("Z", "+00:00"))
+        b = datetime.fromisoformat(iso_b.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return abs((a - b).total_seconds()) <= seconds
 
 
 async def _log_ad_state(label: str) -> dict | None:
@@ -122,6 +133,9 @@ class Bot(commands.Bot):
         self.streamer_links: list[str] = []  # broadcaster-pasted non-skip URLs
         self._seen_streamer_links: set[str] = set()
         self.stream_title: str = ""  # heads the Discord recap embed
+        self.stream_game: str = ""
+        self.stream_started_at: str = ""   # Twitch's ISO start, to match the VOD
+        self.alert_message_id: str | None = None   # the go-live post, for the VOD edit
 
         self.init_spotify()
 
@@ -195,6 +209,8 @@ class Bot(commands.Bot):
                         logger.info("Stream just went LIVE!")
                         self.is_live = True
                         await self._capture_stream_title()
+                        self.alert_message_id = await stream_alert(self.stream_title, self.stream_game)
+                        logger.info("Go-live alert posted: %s", self.alert_message_id)
                         self.ad_task = asyncio.create_task(
                             self._run_ad_loop(run_first_immediately=True)
                         )
@@ -224,6 +240,14 @@ class Bot(commands.Bot):
 
                     # Send recap to Discord bot
                     await self._send_recap()
+
+                    # Turn the go-live post into its VOD card, once Twitch has
+                    # the VOD. Off the monitor loop: it can wait minutes.
+                    if self.alert_message_id:
+                        asyncio.create_task(self._finish_stream_alert(
+                            self.alert_message_id, self.stream_title,
+                            self.stream_game, self.stream_started_at))
+                        self.alert_message_id = None
 
                     if self.ad_task:
                         self.ad_task.cancel()
@@ -379,6 +403,32 @@ class Bot(commands.Bot):
         """
         meta = await fetch_stream_metadata()
         self.stream_title = (meta or {}).get("title") or ""
+        self.stream_game = (meta or {}).get("game_name") or ""
+        self.stream_started_at = (meta or {}).get("started_at") or ""
+
+    async def _finish_stream_alert(self, message_id: str, title: str, game: str,
+                                   started_at: str) -> None:
+        """Edit the go-live post into a VOD card, waiting for the VOD to exist.
+
+        Twitch publishes the archive a few minutes after offline, and until it
+        does the newest VOD is the PREVIOUS stream's — so a match on
+        created_at (the VOD's created_at is the stream's start) guards against
+        linking last week's broadcast. Gives up after ~15 minutes.
+        """
+        for attempt in range(15):
+            try:
+                vod = await get_latest_vod()
+                # The two timestamps come from different Twitch systems and
+                # differ by seconds; anything within two minutes is this stream.
+                if vod and started_at and _within(vod["created_at"], started_at, 120):
+                    ok = await stream_alert_vod(message_id, title, game,
+                                                vod["url"], vod["duration"] or "?")
+                    logger.info("Go-live alert -> VOD card (%s): %s", vod["duration"], ok)
+                    return
+            except Exception:
+                logger.exception("VOD lookup attempt %d failed", attempt + 1)
+            await asyncio.sleep(60)
+        logger.warning("No VOD matching %s appeared in 15 min; alert left as-is.", started_at)
 
     async def _send_recap(self):
         """POST recap data to the Discord bot."""
