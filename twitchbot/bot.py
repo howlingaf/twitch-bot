@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import re
 import time
 from datetime import datetime, timezone
@@ -7,7 +8,7 @@ from urllib.parse import urlparse
 import aiohttp
 import requests
 import spotipy
-from spotipy.exceptions import SpotifyOauthError
+from spotipy.exceptions import SpotifyException, SpotifyOauthError
 from spotipy.oauth2 import SpotifyOAuth
 from twitchio.ext import commands
 
@@ -336,54 +337,35 @@ class Bot(commands.Bot):
                     # invalid_grant means the refresh token is revoked or
                     # expired. Retrying can't fix that — it needs a fresh
                     # authorization-code flow — so stop instead of spinning.
-                    # Any other OAuth error (5xx from the token endpoint, a
-                    # non-JSON body) may well be transient, so let it back off.
-                    if e.error == "invalid_grant":
-                        logger.error(
-                            "Spotify authorization is dead (%s). Re-run the "
-                            "authorization-code flow to refresh .spotify_cache. "
-                            "Stopping now-playing monitor.",
-                            e.error_description or e.error,
-                        )
-                        break
-                    failures += 1
-                    delay = self._spotify_backoff(failures)
-                    logger.warning(
-                        "Spotify OAuth error (%s), attempt %d — retrying in %ds",
-                        e.error_description or e.error, failures, delay,
+                    if e.error != "invalid_grant":
+                        raise
+                    logger.error(
+                        "Spotify authorization is dead (%s). Re-run the "
+                        "authorization-code flow to refresh .spotify_cache. "
+                        "Stopping now-playing monitor.",
+                        e.error_description or e.error,
                     )
-                    await asyncio.sleep(delay)
-                    continue
-                except requests.exceptions.RequestException as e:
-                    # Connection resets, timeouts, DNS hiccups. These are
-                    # routine on a long-lived poll and self-heal on retry, so
-                    # a one-liner is plenty — the traceback is a hundred lines
-                    # of urllib3 internals that says nothing we don't know.
+                    break
+                except Exception as e:
                     failures += 1
                     delay = self._spotify_backoff(failures)
-                    # An isolated blip is INFO; only a run of them is worth
-                    # surfacing in the Discord feed.
-                    log = logger.info if failures == 1 else logger.warning
-                    log(
-                        "Spotify poll network error (%s: %s), attempt %d — "
-                        "retrying in %ds",
-                        type(e).__name__, e, failures, delay,
-                    )
-                    await asyncio.sleep(delay)
-                    continue
-                except Exception:
-                    failures += 1
-                    delay = self._spotify_backoff(failures)
-                    if failures == 1:
-                        logger.exception(
-                            "Error polling Spotify playback — retrying in %ds", delay
-                        )
+                    # Transient (network blips, token-endpoint 5xx, spotipy's
+                    # own retries exhausted): a one-liner, INFO until it
+                    # repeats. Anything else gets a traceback on first sight.
+                    transient = isinstance(
+                        e, (requests.exceptions.RequestException, SpotifyOauthError)
+                    ) or (isinstance(e, SpotifyException) and e.code == -1)
+                    if not transient:
+                        level = logging.ERROR
+                    elif failures == 1:
+                        level = logging.INFO
                     else:
-                        logger.warning(
-                            "Spotify poll still failing (attempt %d) — "
-                            "retrying in %ds",
-                            failures, delay,
-                        )
+                        level = logging.WARNING
+                    logger.log(
+                        level,
+                        "Spotify poll failed (%s: %s), attempt %d — retrying in %ds",
+                        type(e).__name__, e, failures, delay, exc_info=not transient,
+                    )
                     await asyncio.sleep(delay)
                     continue
 
