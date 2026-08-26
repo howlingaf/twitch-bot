@@ -333,20 +333,18 @@ class Bot(commands.Bot):
 
                 except asyncio.CancelledError:
                     raise
-                except SpotifyOauthError as e:
+                except Exception as e:
                     # invalid_grant means the refresh token is revoked or
                     # expired. Retrying can't fix that — it needs a fresh
                     # authorization-code flow — so stop instead of spinning.
-                    if e.error != "invalid_grant":
-                        raise
-                    logger.error(
-                        "Spotify authorization is dead (%s). Re-run the "
-                        "authorization-code flow to refresh .spotify_cache. "
-                        "Stopping now-playing monitor.",
-                        e.error_description or e.error,
-                    )
-                    break
-                except Exception as e:
+                    if isinstance(e, SpotifyOauthError) and e.error == "invalid_grant":
+                        logger.error(
+                            "Spotify authorization is dead (%s). Re-run the "
+                            "authorization-code flow to refresh .spotify_cache. "
+                            "Stopping now-playing monitor.",
+                            e.error_description or e.error,
+                        )
+                        break
                     failures += 1
                     delay = self._spotify_backoff(failures)
                     # Transient (network blips, token-endpoint 5xx, spotipy's
