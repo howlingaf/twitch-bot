@@ -13,29 +13,6 @@ from .logger import logger
 _TIMEOUT = aiohttp.ClientTimeout(total=10)
 
 
-async def alert_owner(message: str) -> bool:
-    """Best effort — an alert failing must never take down its caller."""
-    if not (CONSOLE_SECRET and DISCORD_BOT_URL):
-        logger.warning("Cannot alert owner: CONSOLE_SECRET or DISCORD_BOT_URL unset.")
-        return False
-    try:
-        async with aiohttp.ClientSession(timeout=_TIMEOUT) as session:
-            async with session.post(
-                f"{DISCORD_BOT_URL}/alert",
-                json={"message": message},
-                headers={"Authorization": f"Bearer {CONSOLE_SECRET}"},
-            ) as resp:
-                body = await resp.json(content_type=None)
-                if resp.status == 200 and body.get("ok"):
-                    logger.info("Owner alert sent: %s", message)
-                    return True
-                logger.error("Owner alert failed (HTTP %s): %s", resp.status, body)
-                return False
-    except Exception as e:
-        logger.error("Owner alert request failed: %r", e)
-        return False
-
-
 async def _post(path: str, payload: dict) -> dict | None:
     if not (CONSOLE_SECRET and DISCORD_BOT_URL):
         logger.warning("Cannot reach Discord bot: CONSOLE_SECRET or DISCORD_BOT_URL unset.")
@@ -65,3 +42,8 @@ async def stream_alert_vod(message_id: str, title: str, game: str,
     return bool(await _post("/stream-alert/vod", {
         "message_id": message_id, "title": title, "game": game,
         "vod_url": vod_url, "duration": duration}))
+
+
+async def alert_owner(message: str) -> bool:
+    """Ping the owner in the console channel. Best effort, like everything here."""
+    return bool(await _post("/alert", {"message": message}))

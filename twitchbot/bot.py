@@ -50,14 +50,17 @@ AD_RETRY_DELAY_SECONDS = 5 * 60
 AD_MAX_ATTEMPTS = 3
 
 
+def _parse_iso(ts: str) -> datetime:
+    """A Helix ISO-8601 timestamp ("...Z") as an aware datetime."""
+    return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+
+
 def _within(iso_a: str, iso_b: str, seconds: int) -> bool:
     """Two Twitch ISO-8601 timestamps closer together than `seconds`."""
     try:
-        a = datetime.fromisoformat(iso_a.replace("Z", "+00:00"))
-        b = datetime.fromisoformat(iso_b.replace("Z", "+00:00"))
+        return abs((_parse_iso(iso_a) - _parse_iso(iso_b)).total_seconds()) <= seconds
     except ValueError:
         return False
-    return abs((a - b).total_seconds()) <= seconds
 
 
 async def _log_ad_state(label: str) -> dict | None:
@@ -415,20 +418,22 @@ class Bot(commands.Bot):
         created_at (the VOD's created_at is the stream's start) guards against
         linking last week's broadcast. Gives up after ~15 minutes.
         """
-        for attempt in range(15):
+        # VODs usually appear within a few minutes; back off rather than poll
+        # every minute for the full window (~16 min in 6 calls).
+        for attempt, delay in enumerate((30, 30, 60, 120, 240, 480), 1):
             try:
                 vod = await get_latest_vod()
-                # The two timestamps come from different Twitch systems and
-                # differ by seconds; anything within two minutes is this stream.
+                # Timestamps from two Twitch systems differ by seconds; within
+                # two minutes is this stream.
                 if vod and started_at and _within(vod["created_at"], started_at, 120):
                     ok = await stream_alert_vod(message_id, title, game,
-                                                vod["url"], vod["duration"] or "?")
+                                                vod["url"], vod["duration"] or "")
                     logger.info("Go-live alert -> VOD card (%s): %s", vod["duration"], ok)
                     return
             except Exception:
-                logger.exception("VOD lookup attempt %d failed", attempt + 1)
-            await asyncio.sleep(60)
-        logger.warning("No VOD matching %s appeared in 15 min; alert left as-is.", started_at)
+                logger.exception("VOD lookup attempt %d failed", attempt)
+            await asyncio.sleep(delay)
+        logger.warning("No VOD matching %s appeared in ~16 min; alert left as-is.", started_at)
 
     async def _send_recap(self):
         """POST recap data to the Discord bot."""
@@ -621,15 +626,10 @@ class Bot(commands.Bot):
                 "or run_first_immediately=False)."
             )
         first_cycle = run_first_immediately
-        # When the NEXT cycle's warning is due. Anchored to the start of each
-        # cycle rather than the end of its ad, so the 60s warning and the ad
-        # itself don't push every following break later — that drift made the
-        # "hourly" schedule run every 63 minutes.
-        #
-        # A full period out when the first ad is meant to be skipped: the loop
-        # only skips the WAIT on its first cycle, so anchoring at "now" would
-        # have run an ad immediately on every restart into a live stream —
-        # the one case run_first_immediately=False exists to prevent.
+        # Anchored to each cycle's START so the warning + break don't push the
+        # period out. A full period away when the first ad is skipped: the
+        # loop only skips the wait on its first cycle, so anchoring at "now"
+        # would fire an ad immediately on a restart into a live stream.
         next_warning_at = time.monotonic() + (
             0 if run_first_immediately else AD_PERIOD_SECONDS)
 
@@ -651,11 +651,8 @@ class Bot(commands.Bot):
                         if not self.is_live:
                             break
 
-                        # Pre-flight. A read of the ad schedule proves the token
-                        # is valid and Helix is reachable — the two things that
-                        # would otherwise let a warning go out with no ad behind
-                        # it. It can't prove the commercial call will succeed,
-                        # but it catches the failures that actually happen.
+                        # Pre-flight: proves the token and Helix before chat is
+                        # warned, so a warning never goes out with no ad behind it.
                         before = await _log_ad_state(f"pre-break attempt {attempt}")
                         if before is None:
                             logger.warning(
@@ -989,7 +986,7 @@ class Bot(commands.Bot):
     @staticmethod
     def _since(iso_ts: str) -> tuple[datetime, int]:
         """Parse a Helix ISO timestamp; return it and whole seconds since."""
-        ts = datetime.fromisoformat(iso_ts.replace("Z", "+00:00"))
+        ts = _parse_iso(iso_ts)
         return ts, int((datetime.now(timezone.utc) - ts).total_seconds())
 
     @commands.command(name='pc')
