@@ -15,9 +15,9 @@ Four tables, all keyed by stream:
   events    subs, resubs, gifts, bits, raids — the "support" signals that
             arrive as USERNOTICE / bits tags rather than as chat text
 
-SQLite via the stdlib, WAL mode, one connection. Writes are single-row
-inserts on the chat path and one executemany per presence poll, both
-sub-millisecond, so they run inline on the event loop.
+SQLite via the stdlib, WAL mode, one autocommit connection. Writes are
+single-row inserts on the chat path and one transaction per presence poll,
+both sub-millisecond, so they run inline on the event loop.
 """
 
 import json
@@ -49,7 +49,6 @@ CREATE TABLE IF NOT EXISTS messages (
     is_mod      INTEGER NOT NULL DEFAULT 0,
     is_vip      INTEGER NOT NULL DEFAULT 0,
     is_first    INTEGER NOT NULL DEFAULT 0,   -- first-time chatter in the channel
-    is_command  INTEGER NOT NULL DEFAULT 0,
     source      TEXT NOT NULL DEFAULT 'live'  -- 'live' or 'vod' (backfilled)
 );
 CREATE INDEX IF NOT EXISTS messages_stream_login ON messages (stream_id, login);
@@ -130,24 +129,23 @@ class ChatStore:
                     is_first=False, source: str = "live") -> None:
         self.db.execute(
             "INSERT OR IGNORE INTO messages (id, ts, stream_id, user_id, login, "
-            "display, content, emotes, is_sub, is_mod, is_vip, is_first, "
-            "is_command, source) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "display, content, emotes, is_sub, is_mod, is_vip, is_first, source) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (id, ts, stream_id, user_id, login.lower(), display, content,
-             json.dumps(emotes), int(bool(is_sub)), int(bool(is_mod)),
-             int(bool(is_vip)), int(bool(is_first)),
-             int(content.startswith("!")), source),
+             json.dumps(emotes), is_sub, is_mod, is_vip, is_first, source),
         )
 
     # -------- presence --------
-    def add_presence(self, stream_id: str, chatters: list[tuple[str, str]],
-                     minute: int | None = None) -> None:
+    def add_presence(self, stream_id: str, chatters: list[tuple[str, str]]) -> None:
         """Record every (user_id, login) in `chatters` as present this minute."""
-        minute = (minute or int(time.time())) // 60 * 60
+        minute = int(time.time()) // 60 * 60
+        self.db.execute("BEGIN")
         self.db.executemany(
             "INSERT OR IGNORE INTO presence (minute, stream_id, user_id, login) "
             "VALUES (?, ?, ?, ?)",
             [(minute, stream_id, uid, login.lower()) for uid, login in chatters],
         )
+        self.db.execute("COMMIT")
 
     # -------- events --------
     def add_event(self, *, ts: int, stream_id: str, kind: str, user_id: str | None,

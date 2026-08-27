@@ -20,15 +20,11 @@ watch-time numbers start from the day the bot began recording.
 import argparse
 import json
 import sys
-from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from twitchbot.chatstore import ChatStore  # noqa: E402
-
-
-def _iso_ts(s: str) -> int:
-    return int(datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp())
+from twitchbot.viewerstats import _iso, _ts  # noqa: E402
 
 
 def load(store: ChatStore, path: Path) -> tuple[str, int]:
@@ -38,17 +34,20 @@ def load(store: ChatStore, path: Path) -> tuple[str, int]:
     # gone once the stream ends, so the VOD id stands in for it.
     stream_id = f"vod-{video.get('id') or path.stem}"
     started = video.get("created_at") or ""
+    base = _ts(started) if started else 0
     store.start_stream(stream_id, started, video.get("title", ""),
                        (video.get("game") or video.get("chapters", [{}])[0].get("gameDisplayName") or ""))
-    base = _iso_ts(started) if started else 0
+    if base and video.get("length"):
+        store.end_stream(stream_id, _iso(base + int(video["length"])))
     n = 0
+    store.db.execute("BEGIN")   # one transaction per VOD, not per message
     for c in data.get("comments", []):
         who = c.get("commenter") or {}
         msg = c.get("message") or {}
         badges = {b.get("_id") or b.get("id") for b in msg.get("user_badges", [])}
         emotes = [f["text"] for f in msg.get("fragments", [])
                   if f.get("emoticon") and f.get("text")]
-        ts = _iso_ts(c["created_at"]) if c.get("created_at") \
+        ts = _ts(c["created_at"]) if c.get("created_at") \
             else base + int(c.get("content_offset_seconds", 0))
         store.add_message(
             id=c.get("_id") or c.get("id") or f"{stream_id}-{n}",
@@ -65,6 +64,7 @@ def load(store: ChatStore, path: Path) -> tuple[str, int]:
             source="vod",
         )
         n += 1
+    store.db.execute("COMMIT")
     return stream_id, n
 
 

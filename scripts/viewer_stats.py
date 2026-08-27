@@ -14,49 +14,31 @@ args:"emotes --top 10" in #twitch-bot-console.
 """
 
 import argparse
-import json
-import os
+import asyncio
 import sqlite3
 import sys
-import urllib.request
 from pathlib import Path
-
-from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-load_dotenv(ROOT / ".env")
 
 from twitchbot import viewerstats  # noqa: E402
-
-
-def seventv_emotes() -> set[str]:
-    try:
-        url = viewerstats.SEVENTV_SET_URL.format(broadcaster_id=os.getenv("BROADCASTER_ID"))
-        with urllib.request.urlopen(url, timeout=10) as r:
-            return viewerstats.seventv_names(json.load(r))
-    except Exception as e:  # noqa: BLE001
-        print(f"(7TV lookup failed: {e}; counting Twitch emotes only)", file=sys.stderr)
-        return set()
+from twitchbot.config import BROADCASTER_ID  # noqa: E402
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("report", nargs="?", default="regulars", choices=sorted(viewerstats.REPORTS))
-    ap.add_argument("name", nargs="?")
-    ap.add_argument("--db", default=str(ROOT / "chat.db"))
-    ap.add_argument("--since")
-    ap.add_argument("--top", type=int, default=25)
-    a = ap.parse_args()
+    parser = viewerstats.arg_parser()
+    parser.add_argument("--db", default=str(ROOT / "chat.db"))
+    parser.add_argument("-h", "--help", action="help")
+    parser.description, parser.formatter_class = __doc__, argparse.RawDescriptionHelpFormatter
+    a = parser.parse_args()
     if not Path(a.db).exists():
         sys.exit(f"{a.db} not found — the bot creates it on first run.")
     db = sqlite3.connect(f"file:{a.db}?mode=ro", uri=True)
+    seventv = asyncio.run(viewerstats.fetch_seventv(BROADCASTER_ID)) if a.report == "emotes" else set()
     try:
-        print(viewerstats.run(
-            db, a.report,
-            seventv=seventv_emotes() if a.report == "emotes" else None,
-            name=a.name or "", since=viewerstats.since_ts(a.since), top=a.top,
-        ))
+        print(viewerstats.REPORTS[a.report](
+            db, since=a.since, top=a.top, name=a.name, seventv=seventv))
     except ValueError as e:
         sys.exit(str(e))
 

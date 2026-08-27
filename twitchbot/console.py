@@ -13,6 +13,7 @@ Contract:
 Commands: status, lt_clear, say, test, viewers. The Twitch bot is
 prefix-agnostic — the Discord side maps its own slash commands onto these names.
 """
+import argparse
 import shlex
 import time
 
@@ -72,47 +73,18 @@ async def _cmd_test(bot, args):
 
 
 async def _cmd_viewers(bot, args):
-    """viewers [regulars|viewers|emotes|streams|user NAME] [--since YYYY-MM-DD] [--top N]
-
-    Reports over the chat store, as text for a code block. Defaults to the
-    regulars ranking, top 15 so it fits a Discord message.
-    """
-    words = shlex.split(args or "")
-    report, name, since, top = "regulars", "", 0, 15
-    i = 0
+    """viewers [regulars|viewers|emotes|streams|user NAME] [--since YYYY-MM-DD] [--top N]"""
+    parser = viewerstats.arg_parser(top=15)   # 15 rows fits one Discord message
     try:
-        while i < len(words):
-            w = words[i]
-            if w == "--since":
-                since = viewerstats.since_ts(words[i + 1]); i += 2
-            elif w == "--top":
-                top = max(1, min(50, int(words[i + 1]))); i += 2
-            elif w in viewerstats.REPORTS:
-                report = w; i += 1
-            elif report == "user" and not name:
-                name = w; i += 1
-            else:
-                return False, f"unexpected {w!r}. usage: {_cmd_viewers.__doc__.strip().splitlines()[0]}"
-    except (IndexError, ValueError) as e:
-        return False, f"bad arguments ({e}). usage: {_cmd_viewers.__doc__.strip().splitlines()[0]}"
-
-    seventv: set[str] = set()
-    if report == "emotes":
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    viewerstats.SEVENTV_SET_URL.format(broadcaster_id=BROADCASTER_ID),
-                    timeout=aiohttp.ClientTimeout(total=10),
-                ) as resp:
-                    seventv = viewerstats.seventv_names(await resp.json())
-        except Exception as e:
-            logger.warning("7TV emote set lookup failed: %s", e)
+        a = parser.parse_args(shlex.split(args or ""))
+    except (argparse.ArgumentError, ValueError) as e:
+        return False, f"{e}. usage: {_cmd_viewers.__doc__}"
+    seventv = await viewerstats.fetch_seventv(BROADCASTER_ID) if a.report == "emotes" else set()
     try:
-        text = viewerstats.run(bot.store.db, report, seventv=seventv, name=name,
-                               since=since, top=top)
+        return True, viewerstats.REPORTS[a.report](
+            bot.store.db, since=a.since, top=a.top, name=a.name, seventv=seventv)
     except ValueError as e:
         return False, str(e)
-    return True, f"```\n{text}\n```"
 
 
 _COMMANDS = {

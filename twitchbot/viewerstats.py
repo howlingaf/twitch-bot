@@ -1,30 +1,28 @@
 """Reports over the chat store: who the regulars are, what chat uses.
 
-Every report takes an open sqlite3 connection and returns plain text, so the
-same code serves scripts/viewer_stats.py on the box and the `viewers`
-console command in Discord. Keep output monospace-friendly: it's shown in a
-code block either way.
+Every report takes an open sqlite3 connection and the same keyword
+arguments, and returns plain text — so the same code serves
+scripts/viewer_stats.py on the box and the `viewers` console command in
+Discord. Output is monospace tables; the caller wraps it in a code block.
 """
 
+import argparse
 import json
 import re
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
+
+import aiohttp
 
 _WORD = re.compile(r"\S+")
 
 SEVENTV_SET_URL = "https://7tv.io/v3/users/twitch/{broadcaster_id}"
 
 
-def seventv_names(payload: dict) -> set[str]:
-    """Emote names from a 7TV /v3/users/twitch/<id> response."""
-    return {e["name"] for e in payload.get("emote_set", {}).get("emotes", [])}
-
-
-def since_ts(s: str | None) -> int:
-    if not s:
-        return 0
-    return int(datetime.fromisoformat(s).replace(tzinfo=timezone.utc).timestamp())
+def _ts(iso: str) -> int:
+    """ISO-8601 (Helix's trailing Z included) or bare YYYY-MM-DD -> unix seconds."""
+    return int(datetime.fromisoformat(iso).replace(
+        tzinfo=timezone.utc if "T" not in iso else None).timestamp())
 
 
 def _iso(ts: int) -> str:
@@ -44,35 +42,102 @@ def _table(rows, headers) -> str:
     return "\n".join(lines)
 
 
+def _support_line(rows) -> str:
+    return ", ".join(f"{k} x{c} ({a})" for k, c, a in rows)
+
+
+async def fetch_seventv(broadcaster_id: str) -> set[str]:
+    """Names in the channel's active 7TV emote set (empty if unreachable).
+    7TV emotes are plain text in chat, so this is how they get counted."""
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as s:
+            async with s.get(SEVENTV_SET_URL.format(broadcaster_id=broadcaster_id)) as r:
+                data = await r.json()
+        return {e["name"] for e in data.get("emote_set", {}).get("emotes", [])}
+    except Exception:
+        return set()
+
+
+# --------------------------------------------------------------------------
+# shared aggregation
+# --------------------------------------------------------------------------
 def _streams(db, since: int) -> list[tuple[str, int, int]]:
-    """(id, start_ts, duration_minutes) for every stream in the window, oldest
-    first. A stream still running (or one whose end was never recorded) is
-    measured to its last presence poll or message."""
+    """(id, start_ts, duration_minutes), oldest first. A stream with no
+    recorded end is measured to its last presence poll or message."""
+    last = defaultdict(int)
+    for sid, t in db.execute("SELECT stream_id, MAX(minute) FROM presence GROUP BY stream_id"):
+        last[sid] = t
+    for sid, t in db.execute("SELECT stream_id, MAX(ts) FROM messages GROUP BY stream_id"):
+        last[sid] = max(last[sid], t)
     out = []
     for sid, started, ended in db.execute(
-        "SELECT id, started_at, ended_at FROM streams WHERE started_at >= ? "
-        "ORDER BY started_at", (_iso(since),)
+        "SELECT id, started_at, ended_at FROM streams WHERE started_at >= ? ORDER BY started_at",
+        (_iso(since),),
     ):
-        start = since_ts(started.replace("Z", "+00:00"))
-        if ended:
-            end = since_ts(ended.replace("Z", "+00:00"))
-        else:
-            end = max(
-                db.execute("SELECT COALESCE(MAX(minute), 0) FROM presence WHERE stream_id = ?",
-                           (sid,)).fetchone()[0],
-                db.execute("SELECT COALESCE(MAX(ts), 0) FROM messages WHERE stream_id = ?",
-                           (sid,)).fetchone()[0],
-                start,
-            )
+        start = _ts(started)
+        end = _ts(ended) if ended else max(last[sid], start)
         out.append((sid, start, max(1, (end - start) // 60)))
+    return out
+
+
+def _per_viewer(db, since: int, streams: list) -> list[dict]:
+    """One dict per login with everything the viewer reports need."""
+    index = {sid: i for i, (sid, _, _) in enumerate(streams)}
+    duration = {sid: mins for sid, _, mins in streams}
+
+    minutes = defaultdict(lambda: defaultdict(int))   # login -> stream -> minutes
+    for login, sid, m in db.execute(
+        "SELECT login, stream_id, COUNT(*) FROM presence WHERE minute >= ? "
+        "GROUP BY login, stream_id", (since,)
+    ):
+        if sid in index:
+            minutes[login][sid] = m
+
+    msgs = defaultdict(lambda: defaultdict(int))
+    first, last, subs = {}, {}, set()
+    for login, sid, c, sub, lo, hi in db.execute(
+        "SELECT login, stream_id, COUNT(*), MAX(is_sub), MIN(ts), MAX(ts) FROM messages "
+        "WHERE ts >= ? AND stream_id != '' GROUP BY login, stream_id", (since,)
+    ):
+        if sid not in index:
+            continue
+        msgs[login][sid] = c
+        first[login] = min(first.get(login, lo), lo)
+        last[login] = max(last.get(login, hi), hi)
+        if sub:
+            subs.add(login)
+
+    supporters = {login for (login,) in db.execute(
+        "SELECT DISTINCT login FROM events WHERE ts >= ?", (since,))}
+
+    out = []
+    for login in set(minutes) | set(msgs):
+        attended = set(minutes[login]) | set(msgs[login])
+        # Stay is only measurable where presence ran; a stream known from
+        # messages alone (VOD backfill, pre-scope) is unknown, not 0.
+        stays = [min(1.0, minutes[login][s] / duration[s]) for s in minutes[login]]
+        last_idx = max(index[s] for s in attended)
+        out.append({
+            "login": login,
+            "streams": len(attended),
+            "minutes": sum(minutes[login].values()),
+            "stay": sum(stays) / len(stays) if stays else None,
+            "msgs": sum(msgs[login].values()),
+            "sub": login in subs,
+            "supporter": login in supporters,
+            "first_ts": first.get(login),
+            "last_ts": last.get(login),
+            "last_idx": last_idx,
+            "last_stream_ts": streams[last_idx][1],
+        })
     return out
 
 
 # --------------------------------------------------------------------------
 # regulars
 # --------------------------------------------------------------------------
-# One number per viewer, 0-100, from what the store knows. Weights are a
-# judgement call, written down so they can be argued with:
+# One number per viewer, 0-100. Weights are a judgement call, written down
+# so they can be argued with:
 #
 #   attendance  50   streams they showed up to / streams held
 #   stay        20   of the streams they attended, how much of each they stayed
@@ -86,106 +151,52 @@ CHAT_SATURATE = 10
 RECENCY_HALF_LIFE = 4
 
 
-def regulars(db, since: int = 0, top: int = 25) -> str:
+def _score(v: dict, n_streams: int) -> float:
+    attendance = v["streams"] / n_streams
+    chat = min(1.0, (v["msgs"] / v["streams"]) / CHAT_SATURATE)
+    support = 1.0 if (v["sub"] or v["supporter"]) else 0.0
+    missed = n_streams - 1 - v["last_idx"]
+    recency = 0.5 ** (missed / RECENCY_HALF_LIFE)
+    return (50 * attendance + 20 * (v["stay"] or 0) + 15 * chat + 15 * support) * recency
+
+
+def regulars(db, *, since=0, top=25, **_) -> str:
     streams = _streams(db, since)
     if not streams:
         return "(no streams recorded yet)"
-    n_streams = len(streams)
-    index = {sid: i for i, (sid, _, _) in enumerate(streams)}
-    duration = {sid: mins for sid, _, mins in streams}
-
-    minutes = defaultdict(lambda: defaultdict(int))   # login -> stream -> minutes
-    for login, sid, m in db.execute(
-        "SELECT login, stream_id, COUNT(*) FROM presence WHERE minute >= ? "
-        "GROUP BY login, stream_id", (since,)
-    ):
-        if sid in index:
-            minutes[login][sid] = m
-
-    msgs = defaultdict(lambda: defaultdict(int))
-    subs = set()
-    for login, sid, c, sub in db.execute(
-        "SELECT login, stream_id, COUNT(*), MAX(is_sub) FROM messages "
-        "WHERE ts >= ? AND stream_id != '' GROUP BY login, stream_id", (since,)
-    ):
-        if sid in index:
-            msgs[login][sid] = c
-        if sub:
-            subs.add(login)
-
-    supporters = {login for (login,) in db.execute(
-        "SELECT DISTINCT login FROM events WHERE ts >= ?", (since,))}
-
-    rows = []
-    for login in set(minutes) | set(msgs):
-        attended = set(minutes[login]) | set(msgs[login])
-        attendance = len(attended) / n_streams
-        # Stay is only measurable where presence ran; a stream known from
-        # messages alone (VOD backfill, pre-scope) counts as unknown, not 0.
-        stays = [min(1.0, minutes[login][s] / duration[s]) for s in minutes[login]]
-        stay = sum(stays) / len(stays) if stays else 0.0
-        total_msgs = sum(msgs[login].values())
-        chat = min(1.0, (total_msgs / len(attended)) / CHAT_SATURATE)
-        support = 1.0 if (login in subs or login in supporters) else 0.0
-        last_idx = max(index[s] for s in attended)
-        missed = n_streams - 1 - last_idx
-        recency = 0.5 ** (missed / RECENCY_HALF_LIFE)
-        score = (50 * attendance + 20 * stay + 15 * chat + 15 * support) * recency
-        rows.append((
-            round(score), login, f"{len(attended)}/{n_streams}",
-            f"{int(stay * 100)}%" if stays else "-",
-            f"{sum(minutes[login].values()) / 60:.1f}",
-            total_msgs,
-            "sub" if login in subs else ("supporter" if login in supporters else ""),
-            _day(streams[last_idx][1]),
-        ))
-    rows.sort(key=lambda r: (-r[0], r[1]))
-    head = (f"Regulars — {n_streams} stream(s)"
-            f"{' since ' + _day(since) if since else ''}, top {top}\n"
+    n = len(streams)
+    rows = sorted(
+        ((round(_score(v, n)), v) for v in _per_viewer(db, since, streams)),
+        key=lambda r: (-r[0], r[1]["login"]),
+    )
+    head = (f"Regulars — {n} stream(s){' since ' + _day(since) if since else ''}, top {top}\n"
             f"score = 50·attendance + 20·stay + 15·chat + 15·support, "
             f"halved per {RECENCY_HALF_LIFE} streams missed\n")
-    return head + "\n" + _table(rows[:top], (
-        "score", "viewer", "streams", "stay", "hours", "msgs", "", "last seen"))
+    return head + "\n" + _table([(
+        s, v["login"], f"{v['streams']}/{n}",
+        f"{int(v['stay'] * 100)}%" if v["stay"] is not None else "-",
+        f"{v['minutes'] / 60:.1f}", v["msgs"],
+        "sub" if v["sub"] else ("supporter" if v["supporter"] else ""),
+        _day(v["last_stream_ts"]),
+    ) for s, v in rows[:top]], ("score", "viewer", "streams", "stay", "hours", "msgs", "", "last seen"))
 
 
-# --------------------------------------------------------------------------
-# viewers (raw leaderboard)
-# --------------------------------------------------------------------------
-def viewers(db, since: int = 0, top: int = 25) -> str:
-    total = len(_streams(db, since)) or 1
-    rows = db.execute(
-        """
-        WITH m AS (
-            SELECT login, COUNT(*) AS msgs, COUNT(DISTINCT stream_id) AS chat_streams,
-                   MIN(ts) AS first_ts, MAX(ts) AS last_ts, MAX(is_sub) AS sub
-            FROM messages WHERE ts >= ? AND stream_id != '' GROUP BY login
-        ),
-        p AS (
-            SELECT login, COUNT(*) AS minutes, COUNT(DISTINCT stream_id) AS seen
-            FROM presence WHERE minute >= ? GROUP BY login
-        )
-        SELECT COALESCE(m.login, p.login), COALESCE(p.seen, m.chat_streams, 0),
-               COALESCE(p.minutes, 0), COALESCE(m.msgs, 0), m.first_ts, m.last_ts,
-               COALESCE(m.sub, 0)
-        FROM m LEFT JOIN p ON p.login = m.login
-        UNION
-        SELECT p.login, p.seen, p.minutes, 0, NULL, NULL, 0
-        FROM p LEFT JOIN m ON m.login = p.login WHERE m.login IS NULL
-        ORDER BY 2 DESC, 3 DESC, 4 DESC LIMIT ?
-        """, (since, since, top),
-    ).fetchall()
-    out = [(login, f"{st}/{total}", f"{mins / 60:.1f}", n,
-            f"{n / st:.1f}" if st else "-", _day(first), _day(last), "sub" if sub else "")
-           for login, st, mins, n, first, last, sub in rows]
-    return (f"Top {top} viewers across {total} stream(s)\n\n"
-            + _table(out, ("viewer", "streams", "hours", "msgs", "msgs/stream",
-                           "first chat", "last chat", "")))
+def viewers(db, *, since=0, top=25, **_) -> str:
+    """The raw leaderboard: same facts as `regulars`, no score, sorted by
+    attendance then hours then messages."""
+    streams = _streams(db, since)
+    n = len(streams) or 1
+    rows = sorted(_per_viewer(db, since, streams),
+                  key=lambda v: (-v["streams"], -v["minutes"], -v["msgs"]))
+    return f"Top {top} viewers across {n} stream(s)\n\n" + _table([(
+        v["login"], f"{v['streams']}/{n}", f"{v['minutes'] / 60:.1f}", v["msgs"],
+        f"{v['msgs'] / v['streams']:.1f}", _day(v["first_ts"]), _day(v["last_ts"]),
+        "sub" if v["sub"] else "",
+    ) for v in rows[:top]], ("viewer", "streams", "hours", "msgs", "msgs/stream",
+                             "first chat", "last chat", ""))
 
 
-# --------------------------------------------------------------------------
-# emotes
-# --------------------------------------------------------------------------
-def emotes(db, seventv: set[str], since: int = 0, top: int = 25) -> str:
+def emotes(db, *, since=0, top=25, seventv=frozenset(), **_) -> str:
     twitch, sev, by_user = Counter(), Counter(), Counter()
     for login, content, em in db.execute(
         "SELECT login, content, emotes FROM messages WHERE ts >= ?", (since,)
@@ -203,10 +214,7 @@ def emotes(db, seventv: set[str], since: int = 0, top: int = 25) -> str:
     ])
 
 
-# --------------------------------------------------------------------------
-# streams
-# --------------------------------------------------------------------------
-def streams(db, since: int = 0, top: int = 25) -> str:
+def streams(db, *, since=0, top=25, **_) -> str:
     rows = db.execute(
         """
         SELECT s.id, substr(s.started_at, 1, 16), s.game, s.title,
@@ -223,11 +231,10 @@ def streams(db, since: int = 0, top: int = 25) -> str:
         ("stream", "started", "game", "title", "msgs", "chatters", "present", "new", "events"))
 
 
-# --------------------------------------------------------------------------
-# user
-# --------------------------------------------------------------------------
-def user(db, login: str, since: int = 0, top: int = 25) -> str:
-    login = login.lower().lstrip("@")
+def user(db, *, name="", since=0, top=25, **_) -> str:
+    login = name.lower().lstrip("@")
+    if not login:
+        raise ValueError("user report needs a login: viewers user NAME")
     rows = db.execute(
         """
         SELECT s.id, substr(s.started_at, 1, 10),
@@ -247,63 +254,56 @@ def user(db, login: str, since: int = 0, top: int = 25) -> str:
         "SELECT kind, COUNT(*), SUM(amount) FROM events WHERE login = ? GROUP BY kind", (login,)
     ).fetchall()
     if ev:
-        parts.append("Support: " + ", ".join(f"{k} x{c} ({a})" for k, c, a in ev))
+        parts.append("Support: " + _support_line(ev))
     return "\n\n".join(parts)
 
 
-# --------------------------------------------------------------------------
-# end-of-stream summary
-# --------------------------------------------------------------------------
 def stream_report(db, stream_id: str, top: int = 10) -> str:
     """What just happened, then where the regulars stand. Posted to the
     console channel when a stream ends."""
-    row = db.execute(
-        "SELECT title, game, started_at, ended_at FROM streams WHERE id = ?", (stream_id,)
-    ).fetchone()
+    row = db.execute("SELECT title, game FROM streams WHERE id = ?", (stream_id,)).fetchone()
     if not row:
         return f"(no record of stream {stream_id})"
-    title, game, started, ended = row
-    mins = (since_ts(ended.replace("Z", "+00:00")) - since_ts(started.replace("Z", "+00:00"))) // 60 \
-        if ended else 0
+    title, game = row
+    mins = next((m for sid, _, m in _streams(db, 0) if sid == stream_id), 0)
     msgs, chatters, newbies = db.execute(
-        "SELECT COUNT(*), COUNT(DISTINCT login), SUM(is_first) FROM messages WHERE stream_id = ?",
-        (stream_id,)).fetchone()
+        "SELECT COUNT(*), COUNT(DISTINCT login), COALESCE(SUM(is_first), 0) FROM messages "
+        "WHERE stream_id = ?", (stream_id,)).fetchone()
     present = db.execute(
         "SELECT COUNT(DISTINCT login) FROM presence WHERE stream_id = ?", (stream_id,)).fetchone()[0]
     events = db.execute(
         "SELECT kind, COUNT(*), SUM(amount) FROM events WHERE stream_id = ? GROUP BY kind",
         (stream_id,)).fetchall()
-
     head = [f"Stream report — {title or 'untitled'}" + (f" [{game}]" if game else ""),
             f"{mins // 60}h{mins % 60:02d}m · {present} in chat · {chatters} chatted · "
-            f"{msgs} messages · {newbies or 0} first-timers"]
+            f"{msgs} messages · {newbies} first-timers"]
     if events:
-        head.append("support: " + ", ".join(f"{k} x{c} ({a})" for k, c, a in events))
-
+        head.append("support: " + _support_line(events))
     chatty = db.execute(
         """
         SELECT m.login, COUNT(*) AS n,
                (SELECT COUNT(*) FROM presence p WHERE p.stream_id = m.stream_id AND p.login = m.login)
         FROM messages m WHERE m.stream_id = ? GROUP BY m.login ORDER BY n DESC LIMIT ?
         """, (stream_id, top)).fetchall()
-    return "\n".join(head) + "\n\nThis stream (top chatters)\n\n" \
-        + _table(chatty, ("viewer", "msgs", "minutes")) + "\n\n" + regulars(db, 0, top)
+    return ("\n".join(head) + "\n\nThis stream (top chatters)\n\n"
+            + _table(chatty, ("viewer", "msgs", "minutes")) + "\n\n" + regulars(db, top=top))
 
 
 REPORTS = {"regulars": regulars, "viewers": viewers, "emotes": emotes,
            "streams": streams, "user": user}
 
 
-def run(db, report: str, *, seventv: set[str] | None = None, name: str = "",
-        since: int = 0, top: int = 25) -> str:
-    """Dispatch by name. `seventv` is only needed for the emotes report."""
-    if report == "emotes":
-        return emotes(db, seventv or set(), since, top)
-    if report == "user":
-        if not name:
-            raise ValueError("user report needs a login")
-        return user(db, name, since, top)
-    fn = REPORTS.get(report)
-    if not fn:
-        raise ValueError(f"unknown report {report!r}; one of {', '.join(REPORTS)}")
-    return fn(db, since, top)
+def _top(s: str) -> int:
+    return max(1, min(50, int(s)))
+
+
+def arg_parser(**defaults) -> argparse.ArgumentParser:
+    """The one grammar for both the CLI and the Discord console command:
+    [report] [NAME] [--since YYYY-MM-DD] [--top N]."""
+    p = argparse.ArgumentParser(prog="viewers", add_help=False, exit_on_error=False)
+    p.add_argument("report", nargs="?", default="regulars", choices=sorted(REPORTS))
+    p.add_argument("name", nargs="?", default="")
+    p.add_argument("--since", type=_ts, default=0)
+    p.add_argument("--top", type=_top, default=25)
+    p.set_defaults(**defaults)
+    return p

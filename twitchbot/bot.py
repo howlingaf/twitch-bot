@@ -60,6 +60,15 @@ def _parse_iso(ts: str) -> datetime:
     return datetime.fromisoformat(ts.replace("Z", "+00:00"))
 
 
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _tag_ts(tags: dict) -> int:
+    """IRC tmi-sent-ts (ms) as unix seconds, or now if the tag is missing."""
+    return int(tags.get("tmi-sent-ts") or time.time() * 1000) // 1000
+
+
 def _within(iso_a: str, iso_b: str, seconds: int) -> bool:
     """Two Twitch ISO-8601 timestamps closer together than `seconds`."""
     try:
@@ -254,32 +263,7 @@ class Bot(commands.Bot):
                     offline_strikes = 0
                     self.is_live = False
 
-                    # Send recap to Discord bot
-                    await self._send_recap()
-
-                    # Turn the go-live post into its VOD card, once Twitch has
-                    # the VOD. Off the monitor loop: it can wait minutes.
-                    if self.alert_message_id:
-                        asyncio.create_task(self._finish_stream_alert(
-                            self.alert_message_id, self.stream_title,
-                            self.stream_game, self.stream_started_at))
-                        self.alert_message_id = None
-
-                    if self.ad_task:
-                        self.ad_task.cancel()
-                        self.ad_task = None
-
-                    if self.spotify_task:
-                        self.spotify_task.cancel()
-                        self.spotify_task = None
-
-                    if self.presence_task:
-                        self.presence_task.cancel()
-                        self.presence_task = None
-                    self.store.end_stream(
-                        self.stream_id,
-                        datetime.now(timezone.utc).isoformat(timespec="seconds"))
-                    await self._post_stream_report()
+                    await self._on_stream_end()
 
                 first_check = False
                 await asyncio.sleep(20)
@@ -292,8 +276,8 @@ class Bot(commands.Bot):
                 await asyncio.sleep(10)
 
     # ---------------- VIEWER PRESENCE MONITOR ----------------
-    # Get Chatters once a minute while live. One row per (minute, viewer) is
-    # the watch-time proxy: Twitch has no per-viewer watch time at all.
+    # Get Chatters once a minute while live, into the presence table (see
+    # chatstore.py for why that's the watch-time proxy).
     PRESENCE_POLL_INTERVAL = 60
 
     async def monitor_presence(self):
@@ -424,6 +408,27 @@ class Bot(commands.Bot):
             logger.info("Spotify now-playing monitor stopped.")
 
     # ---------------- RECAP ----------------
+    async def _on_stream_end(self):
+        for attr in ("ad_task", "spotify_task", "presence_task"):
+            task = getattr(self, attr)
+            if task:
+                task.cancel()
+                setattr(self, attr, None)
+
+        self.store.end_stream(self.stream_id, _now_iso())
+        await self._send_recap()
+        await self._post_stream_report()
+
+        # Turn the go-live post into its VOD card, once Twitch has the VOD.
+        # Off the monitor loop: it can wait minutes.
+        if self.alert_message_id:
+            asyncio.create_task(self._finish_stream_alert(
+                self.alert_message_id, self.stream_title,
+                self.stream_game, self.stream_started_at))
+            self.alert_message_id = None
+        # Off-stream chat is still recorded, under stream id "".
+        self.stream_id = ""
+
     async def _capture_stream_title(self):
         """Remember the stream's title while it's still live.
 
@@ -438,12 +443,8 @@ class Bot(commands.Bot):
         # Helix's stream id keys the chat store. Without it (metadata fetch
         # failed) fall back to a local id so the messages still get grouped.
         self.stream_id = (meta or {}).get("id") or f"local-{self.stream_start_ts}"
-        self.store.start_stream(
-            self.stream_id,
-            self.stream_started_at
-            or datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            self.stream_title, self.stream_game,
-        )
+        self.store.start_stream(self.stream_id, self.stream_started_at or _now_iso(),
+                                self.stream_title, self.stream_game)
 
     async def _finish_stream_alert(self, message_id: str, title: str, game: str,
                                    started_at: str) -> None:
@@ -566,8 +567,8 @@ class Bot(commands.Bot):
         login = tags.get("login") or tags.get("msg-param-login", "")
         try:
             self.store.add_event(
-                ts=int(tags.get("tmi-sent-ts") or time.time() * 1000) // 1000,
-                stream_id=self.stream_id if self.is_live else "",
+                ts=_tag_ts(tags),
+                stream_id=self.stream_id,
                 kind=kind,
                 user_id=tags.get("user-id"),
                 login=login or "anonymous",
@@ -648,17 +649,14 @@ class Bot(commands.Bot):
         await self.handle_commands(message)
 
     def _record_message(self, message) -> None:
-        """Persist a chat line. Off-stream chat is kept too, under a
-        stream id of '' — it's still a signal of who hangs around."""
         try:
             tags = message.tags or {}
             author = message.author
-            ts = int(tags["tmi-sent-ts"]) // 1000 if tags.get("tmi-sent-ts") \
-                else int(time.time())
+            ts = _tag_ts(tags)
             self.store.add_message(
                 id=message.id or f"{ts}-{author.name}-{hash(message.content)}",
                 ts=ts,
-                stream_id=self.stream_id if self.is_live else "",
+                stream_id=self.stream_id,
                 user_id=tags.get("user-id"),
                 login=author.name,
                 display=author.display_name,
@@ -671,8 +669,7 @@ class Bot(commands.Bot):
             )
             if tags.get("bits"):
                 self.store.add_event(
-                    ts=ts, stream_id=self.stream_id if self.is_live else "",
-                    kind="bits", user_id=tags.get("user-id"), login=author.name,
+                    ts=ts, stream_id=self.stream_id, kind="bits", user_id=tags.get("user-id"), login=author.name,
                     amount=int(tags["bits"]), detail=message.content,
                 )
         except Exception:
