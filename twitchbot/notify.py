@@ -44,6 +44,11 @@ async def stream_alert_vod(message_id: str, title: str, game: str,
         "vod_url": vod_url, "duration": duration}))
 
 
+async def console_lines(text: str) -> bool:
+    """Post a block of text into #twitch-bot-console (no ping) via the log relay."""
+    return bool(await _post("/twitch-log", {"lines": text.split("\n")}))
+
+
 async def alert_owner(message: str) -> bool:
     """Ping the owner in the console channel. Best effort, like everything here."""
     return bool(await _post("/alert", {"message": message}))

@@ -251,6 +251,45 @@ def user(db, login: str, since: int = 0, top: int = 25) -> str:
     return "\n\n".join(parts)
 
 
+# --------------------------------------------------------------------------
+# end-of-stream summary
+# --------------------------------------------------------------------------
+def stream_report(db, stream_id: str, top: int = 10) -> str:
+    """What just happened, then where the regulars stand. Posted to the
+    console channel when a stream ends."""
+    row = db.execute(
+        "SELECT title, game, started_at, ended_at FROM streams WHERE id = ?", (stream_id,)
+    ).fetchone()
+    if not row:
+        return f"(no record of stream {stream_id})"
+    title, game, started, ended = row
+    mins = (since_ts(ended.replace("Z", "+00:00")) - since_ts(started.replace("Z", "+00:00"))) // 60 \
+        if ended else 0
+    msgs, chatters, newbies = db.execute(
+        "SELECT COUNT(*), COUNT(DISTINCT login), SUM(is_first) FROM messages WHERE stream_id = ?",
+        (stream_id,)).fetchone()
+    present = db.execute(
+        "SELECT COUNT(DISTINCT login) FROM presence WHERE stream_id = ?", (stream_id,)).fetchone()[0]
+    events = db.execute(
+        "SELECT kind, COUNT(*), SUM(amount) FROM events WHERE stream_id = ? GROUP BY kind",
+        (stream_id,)).fetchall()
+
+    head = [f"Stream report — {title or 'untitled'}" + (f" [{game}]" if game else ""),
+            f"{mins // 60}h{mins % 60:02d}m · {present} in chat · {chatters} chatted · "
+            f"{msgs} messages · {newbies or 0} first-timers"]
+    if events:
+        head.append("support: " + ", ".join(f"{k} x{c} ({a})" for k, c, a in events))
+
+    chatty = db.execute(
+        """
+        SELECT m.login, COUNT(*) AS n,
+               (SELECT COUNT(*) FROM presence p WHERE p.stream_id = m.stream_id AND p.login = m.login)
+        FROM messages m WHERE m.stream_id = ? GROUP BY m.login ORDER BY n DESC LIMIT ?
+        """, (stream_id, top)).fetchall()
+    return "\n".join(head) + "\n\nThis stream (top chatters)\n\n" \
+        + _table(chatty, ("viewer", "msgs", "minutes")) + "\n\n" + regulars(db, 0, top)
+
+
 REPORTS = {"regulars": regulars, "viewers": viewers, "emotes": emotes,
            "streams": streams, "user": user}
 

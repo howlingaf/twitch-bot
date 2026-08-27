@@ -38,8 +38,9 @@ from .twitch_api import (
     get_chatters,
 )
 from .chatstore import ChatStore, parse_emotes
+from . import viewerstats
 from .helpers import leetcode_slug, resolve_problem_name
-from .notify import alert_owner, stream_alert, stream_alert_vod
+from .notify import alert_owner, console_lines, stream_alert, stream_alert_vod
 
 # Ad cadence. The period is measured warning-to-warning, so a break lands at
 # the same point in every hour of a stream.
@@ -278,6 +279,7 @@ class Bot(commands.Bot):
                     self.store.end_stream(
                         self.stream_id,
                         datetime.now(timezone.utc).isoformat(timespec="seconds"))
+                    await self._post_stream_report()
 
                 first_check = False
                 await asyncio.sleep(20)
@@ -468,6 +470,16 @@ class Bot(commands.Bot):
                 logger.exception("VOD lookup attempt %d failed", attempt)
             await asyncio.sleep(delay)
         logger.warning("No VOD matching %s appeared in ~16 min; alert left as-is.", started_at)
+
+    async def _post_stream_report(self):
+        """The stream's chat numbers and the regulars ranking, into
+        #twitch-bot-console. Best effort — a failure is a log line."""
+        try:
+            text = viewerstats.stream_report(self.store.db, self.stream_id)
+            ok = await console_lines(text)
+            logger.info("Stream report posted to console: %s", ok)
+        except Exception:
+            logger.exception("Failed to post stream report")
 
     async def _send_recap(self):
         """POST recap data to the Discord bot."""
