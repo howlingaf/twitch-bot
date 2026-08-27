@@ -4,7 +4,7 @@ Twitch keeps no per-viewer history you can query later — no emote counts, no
 watch time per user, no message archive beyond the VOD's chat replay — so the
 only way to know who the regulars are is to keep the record ourselves.
 
-Three tables, all keyed by stream:
+Four tables, all keyed by stream:
 
   streams   one row per broadcast (Helix stream id, title, start/end)
   messages  every chat line: who, when, what, which Twitch emotes it carried,
@@ -12,6 +12,8 @@ Three tables, all keyed by stream:
   presence  one row per (minute, user) from polling Get Chatters while live —
             the closest thing to watch time Twitch exposes (logged-in
             viewers with chat open; lurkers on the embed don't show)
+  events    subs, resubs, gifts, bits, raids — the "support" signals that
+            arrive as USERNOTICE / bits tags rather than as chat text
 
 SQLite via the stdlib, WAL mode, one connection. Writes are single-row
 inserts on the chat path and one executemany per presence poll, both
@@ -61,6 +63,19 @@ CREATE TABLE IF NOT EXISTS presence (
     PRIMARY KEY (minute, user_id)
 );
 CREATE INDEX IF NOT EXISTS presence_stream_login ON presence (stream_id, login);
+
+CREATE TABLE IF NOT EXISTS events (
+    id          INTEGER PRIMARY KEY,
+    ts          INTEGER NOT NULL,
+    stream_id   TEXT NOT NULL,
+    kind        TEXT NOT NULL,      -- sub | resub | subgift | submysterygift | bits | raid
+    user_id     TEXT,
+    login       TEXT NOT NULL,
+    amount      INTEGER NOT NULL DEFAULT 0,  -- months / gifts / bits / raid viewers
+    tier        TEXT,               -- 1000 / 2000 / 3000 / Prime for sub kinds
+    detail      TEXT                -- recipient login for a gift, resub message, ...
+);
+CREATE INDEX IF NOT EXISTS events_login ON events (login);
 """
 
 
@@ -132,6 +147,16 @@ class ChatStore:
             "INSERT OR IGNORE INTO presence (minute, stream_id, user_id, login) "
             "VALUES (?, ?, ?, ?)",
             [(minute, stream_id, uid, login.lower()) for uid, login in chatters],
+        )
+
+    # -------- events --------
+    def add_event(self, *, ts: int, stream_id: str, kind: str, user_id: str | None,
+                  login: str, amount: int = 0, tier: str | None = None,
+                  detail: str | None = None) -> None:
+        self.db.execute(
+            "INSERT INTO events (ts, stream_id, kind, user_id, login, amount, tier, detail) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (ts, stream_id, kind, user_id, login.lower(), int(amount or 0), tier, detail),
         )
 
     def close(self) -> None:

@@ -535,11 +535,41 @@ class Bot(commands.Bot):
         return False
 
     # ---------------- RAID AUTO-SHOUTOUT ----------------
+    # USERNOTICE msg-ids worth keeping as support events, and where each
+    # keeps its size: cumulative months for subs, gift count for a mystery
+    # gift, viewers for a raid.
+    _SUPPORT_NOTICES = {
+        "sub": "msg-param-cumulative-months",
+        "resub": "msg-param-cumulative-months",
+        "subgift": "msg-param-months",
+        "submysterygift": "msg-param-mass-gift-count",
+        "raid": "msg-param-viewerCount",
+    }
+
     async def event_raw_usernotice(self, channel, tags: dict):
-        if tags.get("msg-id") != "raid":
+        kind = tags.get("msg-id")
+        if kind not in self._SUPPORT_NOTICES:
             return
 
-        raider_login = tags.get("login") or tags.get("msg-param-login", "")
+        login = tags.get("login") or tags.get("msg-param-login", "")
+        try:
+            self.store.add_event(
+                ts=int(tags.get("tmi-sent-ts") or time.time() * 1000) // 1000,
+                stream_id=self.stream_id if self.is_live else "",
+                kind=kind,
+                user_id=tags.get("user-id"),
+                login=login or "anonymous",
+                amount=int(tags.get(self._SUPPORT_NOTICES[kind]) or 0),
+                tier=tags.get("msg-param-sub-plan"),
+                detail=tags.get("msg-param-recipient-user-name") or tags.get("system-msg"),
+            )
+        except Exception:
+            logger.exception("Failed to record %s event", kind)
+
+        if kind != "raid":
+            return
+
+        raider_login = login
         viewer_count = tags.get("msg-param-viewerCount", "?")
         logger.info("Raid from %s with %s viewers", raider_login, viewer_count)
 
@@ -627,6 +657,12 @@ class Bot(commands.Bot):
                 is_vip=author.is_vip,
                 is_first=bool(message.first),
             )
+            if tags.get("bits"):
+                self.store.add_event(
+                    ts=ts, stream_id=self.stream_id if self.is_live else "",
+                    kind="bits", user_id=tags.get("user-id"), login=author.name,
+                    amount=int(tags["bits"]), detail=message.content,
+                )
         except Exception:
             logger.exception("Failed to record chat message")
 
