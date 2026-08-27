@@ -14,6 +14,7 @@ from twitchio.ext import commands
 
 from .config import (
     BOT_OAUTH_TOKEN,
+    CHAT_DB,
     CLIENT_ID,
     SPOTIFY_CLIENT_ID,
     SPOTIFY_CLIENT_SECRET,
@@ -34,7 +35,9 @@ from .twitch_api import (
     get_follow_info,
     get_stream_started_at,
     get_user_id,
+    get_chatters,
 )
+from .chatstore import ChatStore, parse_emotes
 from .helpers import leetcode_slug, resolve_problem_name
 from .notify import alert_owner, stream_alert, stream_alert_vod
 
@@ -141,6 +144,11 @@ class Bot(commands.Bot):
         self.stream_started_at: str = ""   # Twitch's ISO start, to match the VOD
         self.alert_message_id: str | None = None   # the go-live post, for the VOD edit
 
+        # Per-viewer history: every message, and who's in chat each minute.
+        self.store = ChatStore(CHAT_DB)
+        self.stream_id: str = ""
+        self.presence_task = None
+
         self.init_spotify()
 
     # ---------------- SPOTIFY INIT ----------------
@@ -222,6 +230,9 @@ class Bot(commands.Bot):
                     self.spotify_task = asyncio.create_task(
                         self.monitor_spotify()
                     )
+                    self.presence_task = asyncio.create_task(
+                        self.monitor_presence()
+                    )
 
                 elif not live and self.is_live:
                     offline_strikes += 1
@@ -261,6 +272,13 @@ class Bot(commands.Bot):
                         self.spotify_task.cancel()
                         self.spotify_task = None
 
+                    if self.presence_task:
+                        self.presence_task.cancel()
+                        self.presence_task = None
+                    self.store.end_stream(
+                        self.stream_id,
+                        datetime.now(timezone.utc).isoformat(timespec="seconds"))
+
                 first_check = False
                 await asyncio.sleep(20)
 
@@ -270,6 +288,33 @@ class Bot(commands.Bot):
             except Exception:
                 logger.exception("Error in live status monitor loop")
                 await asyncio.sleep(10)
+
+    # ---------------- VIEWER PRESENCE MONITOR ----------------
+    # Get Chatters once a minute while live. One row per (minute, viewer) is
+    # the watch-time proxy: Twitch has no per-viewer watch time at all.
+    PRESENCE_POLL_INTERVAL = 60
+
+    async def monitor_presence(self):
+        logger.info("Viewer presence monitor started.")
+        misses = 0
+        try:
+            while self.is_live:
+                chatters = await get_chatters()
+                if chatters is None:
+                    misses += 1
+                    if misses == 3:
+                        logger.warning(
+                            "Get Chatters has failed 3 times running — if the "
+                            "log shows HTTP 401/403, the broadcaster token lacks "
+                            "moderator:read:chatters: re-run scripts/twitch_auth.py"
+                        )
+                else:
+                    misses = 0
+                    self.store.add_presence(self.stream_id, chatters)
+                await asyncio.sleep(self.PRESENCE_POLL_INTERVAL)
+        except asyncio.CancelledError:
+            logger.info("Viewer presence monitor cancelled.")
+            raise
 
     # ---------------- SPOTIFY NOW-PLAYING MONITOR ----------------
     # Poll cadence while healthy. After a failure the delay doubles from
@@ -388,6 +433,15 @@ class Bot(commands.Bot):
         self.stream_title = (meta or {}).get("title") or ""
         self.stream_game = (meta or {}).get("game_name") or ""
         self.stream_started_at = (meta or {}).get("started_at") or ""
+        # Helix's stream id keys the chat store. Without it (metadata fetch
+        # failed) fall back to a local id so the messages still get grouped.
+        self.stream_id = (meta or {}).get("id") or f"local-{self.stream_start_ts}"
+        self.store.start_stream(
+            self.stream_id,
+            self.stream_started_at
+            or datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            self.stream_title, self.stream_game,
+        )
 
     async def _finish_stream_alert(self, message_id: str, title: str, game: str,
                                    started_at: str) -> None:
@@ -514,6 +568,8 @@ class Bot(commands.Bot):
         if message.author and message.author.name.lower() == BOT_NICK:
             return
 
+        self._record_message(message)
+
         # Scan for LeetCode submission URLs from chatters
         if self.is_live:
             for match in _LEETCODE_SUBMISSION_RE.finditer(message.content):
@@ -548,6 +604,31 @@ class Bot(commands.Bot):
                 logger.info("[RECAP] Captured streamer link: %s", url)
 
         await self.handle_commands(message)
+
+    def _record_message(self, message) -> None:
+        """Persist a chat line. Off-stream chat is kept too, under a
+        stream id of '' — it's still a signal of who hangs around."""
+        try:
+            tags = message.tags or {}
+            author = message.author
+            ts = int(tags["tmi-sent-ts"]) // 1000 if tags.get("tmi-sent-ts") \
+                else int(time.time())
+            self.store.add_message(
+                id=message.id or f"{ts}-{author.name}-{hash(message.content)}",
+                ts=ts,
+                stream_id=self.stream_id if self.is_live else "",
+                user_id=tags.get("user-id"),
+                login=author.name,
+                display=author.display_name,
+                content=message.content,
+                emotes=parse_emotes(message.content, tags.get("emotes")),
+                is_sub=author.is_subscriber,
+                is_mod=author.is_mod,
+                is_vip=author.is_vip,
+                is_first=bool(message.first),
+            )
+        except Exception:
+            logger.exception("Failed to record chat message")
 
     async def event_command_error(self, ctx, error):
         cmd_name = ctx.command.name if getattr(ctx, "command", None) else "unknown"

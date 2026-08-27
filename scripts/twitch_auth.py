@@ -46,7 +46,9 @@ ACCOUNTS = {
         # the pre-roll bank instead of a local guess.
         "scopes": "channel:edit:commercial channel:read:ads "
                   "moderator:manage:shoutouts channel:bot "
-                  "channel:manage:vips moderator:read:followers",
+                  "channel:manage:vips moderator:read:followers "
+                  # Get Chatters, polled while live for per-viewer presence.
+                  "moderator:read:chatters",
         "filename": ".twitch_tokens.json",
     },
     "bot": {

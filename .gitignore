@@ -7,3 +7,6 @@ __pycache__/
 .tio.tokens.json
 .venv
 uv.lock
+*.db
+*.db-wal
+*.db-shm

@@ -230,6 +230,32 @@ async def get_follow_info(user_id: str) -> tuple[bool, str | None]:
     return True, data[0]["followed_at"] if data else None
 
 
+async def get_chatters() -> list[tuple[str, str]] | None:
+    """Everyone currently connected to the channel's chat, as (id, login).
+
+    Needs moderator:read:chatters on the broadcaster token. Returns None if
+    the request fails (including a 403 from a token without that scope) so
+    the caller can tell "nobody here" from "couldn't look".
+    """
+    base = (
+        "https://api.twitch.tv/helix/chat/chatters"
+        f"?broadcaster_id={BROADCASTER_ID}&moderator_id={BROADCASTER_ID}&first=1000"
+    )
+    chatters: list[tuple[str, str]] = []
+    cursor = ""
+    while True:
+        url = base + (f"&after={cursor}" if cursor else "")
+        status, body = await _twitch_request("GET", url)
+        if status != 200:
+            logger.error("Get Chatters failed. HTTP %s: %s", status, body)
+            return None
+        data = json.loads(body)
+        chatters.extend((u["user_id"], u["user_login"]) for u in data.get("data", []))
+        cursor = data.get("pagination", {}).get("cursor", "")
+        if not cursor:
+            return chatters
+
+
 async def get_user_id(login: str) -> str | None:
     url = f"https://api.twitch.tv/helix/users?login={login}"
     status, body = await _twitch_request("GET", url)
