@@ -252,14 +252,14 @@ def raiders(db, *, since=0, top=25, focus=None, **_) -> str:
         % ",".join("?" * len(REPORT_IGNORE)),
         (since, *sorted(REPORT_IGNORE))) if r[3] in ids and (focus is None or r[3] == focus)]
     if not rows:
-        return "Raiders — none" + (" this stream" if focus else "")
+        return "Raiders — none"
     by_login = defaultdict(lambda: [0, 0])
     for login, c, viewers_in, _ in rows:
         by_login[login][0] += c
         by_login[login][1] += viewers_in or 0
     ranked = sorted(by_login.items(), key=lambda kv: (-kv[1][1], -kv[1][0], kv[0]))
-    scope = "this stream" if focus else f"{len(streams)} stream(s)"
-    return (f"Raiders — {scope}\n\n" + _table(
+    scope = "" if focus else f" — {len(streams)} stream(s)"
+    return (f"Raiders{scope}\n\n" + _table(
         [(login, c, v) for login, (c, v) in ranked[:top]],
         ("viewer", "raids", "viewers")))
 
@@ -362,17 +362,30 @@ def stream_report(db, stream_id: str, top: int = 10) -> str:
             f"{msgs} messages · {newbies} first-timers"]
     if events:
         head.append("support: " + _support_line(events))
+    skip = sorted(REPORT_IGNORE)
+    holes = ",".join("?" * len(skip))
+
     chatty = db.execute(
-        """
-        SELECT m.login, COUNT(*) AS n,
-               (SELECT COUNT(*) FROM presence p WHERE p.stream_id = m.stream_id AND p.login = m.login)
-        FROM messages m WHERE m.stream_id = ? AND m.login NOT IN (%s) GROUP BY m.login
-        ORDER BY n DESC, 3 DESC, m.login LIMIT ?
-        """ % ",".join("?" * len(REPORT_IGNORE)),
-        (stream_id, *sorted(REPORT_IGNORE), top)).fetchall()
-    return ("\n".join(head) + "\n\nThis stream (top chatters)\n\n"
-            + _table(chatty, ("viewer", "msgs", "minutes")) + "\n\n"
-            + regulars(db, top=top, focus=stream_id)
+        f"""
+        SELECT login, COUNT(*) AS n FROM messages
+        WHERE stream_id = ? AND login NOT IN ({holes})
+        GROUP BY login ORDER BY n DESC, login LIMIT ?
+        """, (stream_id, *skip, top)).fetchall()
+
+    # Stay and messages are different kinds of viewer, so they get a list each
+    # rather than one table ranking them against each other.
+    stayed = db.execute(
+        f"""
+        SELECT login, COUNT(*) AS m FROM presence
+        WHERE stream_id = ? AND login NOT IN ({holes})
+        GROUP BY login ORDER BY m DESC, login LIMIT ?
+        """, (stream_id, *skip, top)).fetchall()
+
+    return ("\n".join(head)
+            + "\n\nLongest stay\n\n" + _table(
+                [(login, f"{int(min(1.0, m / mins) * 100)}%", f"{m / 60:.1f}")
+                 for login, m in stayed], ("viewer", "stay", "hours"))
+            + "\n\nMost messages\n\n" + _table(chatty, ("viewer", "msgs"))
             + "\n\n" + raiders(db, top=top, focus=stream_id))
 
 
