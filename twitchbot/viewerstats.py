@@ -237,31 +237,27 @@ def regulars(db, *, since=0, top=25, focus=None, **_) -> str:
     ) for s, v in rows[:top]], ("score", "viewer", "stay", "hours", "msgs", ""))
 
 
-def raiders(db, *, since=0, top=25, focus=None, **_) -> str:
-    """Who has raided in, and how many people they brought.
+def raiders(db, *, since=0, top=25, sids=None, **_) -> str:
+    """Who raided in, and how many people they brought.
 
-    Raids sit apart from the regulars score deliberately: bringing 39 people
-    once is worth knowing on its own terms, not as fifteen points blended into
-    an attendance number.
+    Raids sit apart from the other lists deliberately: bringing 39 people once
+    is worth knowing on its own terms, not blended into an attendance number.
     """
-    streams = _streams(db, since)
-    ids = {sid for sid, _, _ in streams}
-    rows = [r for r in db.execute(
-        "SELECT login, COUNT(*), SUM(amount), stream_id FROM events "
-        "WHERE kind = 'raid' AND ts >= ? AND login NOT IN (%s) GROUP BY login, stream_id"
-        % ",".join("?" * len(REPORT_IGNORE)),
-        (since, *sorted(REPORT_IGNORE))) if r[3] in ids and (focus is None or r[3] == focus)]
+    window = list(sids) if sids is not None else [s for s, _, _ in _streams(db, since)]
+    if not window:
+        return "Raiders — none"
+    skip = sorted(REPORT_IGNORE)
+    rows = db.execute(
+        "SELECT login, COUNT(*), SUM(amount) FROM events "
+        "WHERE kind = 'raid' AND login NOT IN (%s) AND stream_id IN (%s) GROUP BY login"
+        % (",".join("?" * len(skip)), ",".join("?" * len(window))),
+        (*skip, *window)).fetchall()
     if not rows:
         return "Raiders — none"
-    by_login = defaultdict(lambda: [0, 0])
-    for login, c, viewers_in, _ in rows:
-        by_login[login][0] += c
-        by_login[login][1] += viewers_in or 0
-    ranked = sorted(by_login.items(), key=lambda kv: (-kv[1][1], -kv[1][0], kv[0]))
-    scope = "" if focus else f" — {len(streams)} stream(s)"
-    return (f"Raiders{scope}\n\n" + _table(
-        [(login, c, v) for login, (c, v) in ranked[:top]],
-        ("viewer", "raids", "viewers")))
+    ranked = sorted(rows, key=lambda r: (-(r[2] or 0), -r[1], r[0]))
+    return "Raiders\n\n" + _table(
+        [(login, c, v or 0) for login, c, v in ranked[:top]],
+        ("viewer", "raids", "viewers"))
 
 
 def viewers(db, *, since=0, top=25, **_) -> str:
@@ -341,67 +337,74 @@ def user(db, *, name="", since=0, top=25, **_) -> str:
     return "\n\n".join(parts)
 
 
-def stream_report(db, stream_id: str, top: int = 10) -> str:
-    """What just happened, then where the regulars stand. Posted to the
-    console channel when a stream ends."""
-    row = db.execute("SELECT title, game FROM streams WHERE id = ?", (stream_id,)).fetchone()
-    if not row:
-        return f"(no record of stream {stream_id})"
-    title, game = row
-    mins = next((m for sid, _, m in _streams(db, 0) if sid == stream_id), 0)
-    msgs, chatters, newbies = db.execute(
-        "SELECT COUNT(*), COUNT(DISTINCT login), COALESCE(SUM(is_first), 0) FROM messages "
-        "WHERE stream_id = ?", (stream_id,)).fetchone()
+def _report(db, sids: list[str], headline: str, top: int) -> str:
+    """Who stayed, who talked, who raided, over one stream or many.
+
+    Everything before the window's earliest stream is the history that
+    "returning" is measured against, so widening the window necessarily
+    shrinks that history — over the whole record there is none, and the
+    composition line drops out rather than comparing a stream with itself.
+    """
+    all_streams = _streams(db, 0)
+    dur = {sid: m for sid, _, m in all_streams}
+    mins = sum(dur.get(s, 0) for s in sids) or 1
     skip = sorted(REPORT_IGNORE)
     holes = ",".join("?" * len(skip))
+    marks = ",".join("?" * len(sids))
+
+    msgs, chatters, newbies = db.execute(
+        f"SELECT COUNT(*), COUNT(DISTINCT login), COALESCE(SUM(is_first), 0) "
+        f"FROM messages WHERE stream_id IN ({marks})", tuple(sids)).fetchone()
     here = {l for (l,) in db.execute(
-        f"SELECT DISTINCT login FROM presence WHERE stream_id = ? AND login NOT IN ({holes})",
-        (stream_id, *skip))}
+        f"SELECT DISTINCT login FROM presence WHERE stream_id IN ({marks}) "
+        f"AND login NOT IN ({holes})", (*sids, *skip))}
     present = len(here)
 
-    # How many of tonight's room had been here before. "Returning" is anyone
-    # seen in an earlier recorded stream; "regular" is anyone seen in more than
-    # half of them — a share rather than a count, so it keeps meaning the same
-    # thing as the record grows.
-    started = next((t for sid, t, _ in _streams(db, 0) if sid == stream_id), 0)
-    prior = [sid for sid, t, _ in _streams(db, 0) if t < started]
+    # "Returning" is anyone seen in a stream before this window; "regular" is
+    # anyone seen in more than half of them — a share rather than a count, so
+    # it keeps meaning the same thing as the record grows.
+    window = set(sids)
+    starts = min((t for sid, t, _ in all_streams if sid in window), default=0)
+    prior = [sid for sid, t, _ in all_streams if t < starts]
     attended = Counter()
     for sid in prior:
         for (l,) in db.execute("SELECT DISTINCT login FROM presence WHERE stream_id = ?", (sid,)):
             attended[l] += 1
     returning = sum(1 for l in here if attended[l])
     regular = sum(1 for l in here if attended[l] * 2 > len(prior))
+
     events = db.execute(
-        "SELECT kind, COUNT(*), SUM(amount) FROM events WHERE stream_id = ? GROUP BY kind",
-        (stream_id,)).fetchall()
-    head = [f"Stream report — {title or 'untitled'}" + (f" [{game}]" if game else ""),
+        f"SELECT kind, COUNT(*), SUM(amount) FROM events WHERE stream_id IN ({marks}) "
+        f"GROUP BY kind", tuple(sids)).fetchall()
+
+    head = [headline,
             f"{mins // 60}h{mins % 60:02d}m · {present} in chat · {chatters} chatted · "
             f"{msgs} messages"]
-    head.append(f"{newbies} first-timers"
-                + (f" · {returning} returning" if prior else ""))
+    head.append(f"{newbies} first-timers" + (f" · {returning} returning" if prior else ""))
     if prior and present:
-        # Both are shares of everyone present, not of each other -- regulars are
+        # Both are shares of everyone present, not of each other — regulars are
         # a subset of returning, and naming the denominator stops the second
         # number reading as "22% of the returning".
         head.append(f"{returning * 100 // present}% returning vs "
                     f"{regular * 100 // present}% regular (of {present} in chat)")
     if events:
         head.append("support: " + _support_line(events))
+
     chatty = db.execute(
         f"""
         SELECT login, COUNT(*) AS n FROM messages
-        WHERE stream_id = ? AND login NOT IN ({holes})
+        WHERE stream_id IN ({marks}) AND login NOT IN ({holes})
         GROUP BY login ORDER BY n DESC, login LIMIT ?
-        """, (stream_id, *skip, top)).fetchall()
+        """, (*sids, *skip, top)).fetchall()
 
     # Stay and messages are different kinds of viewer, so they get a list each
     # rather than one table ranking them against each other.
     stayed = db.execute(
         f"""
         SELECT login, COUNT(*) AS m FROM presence
-        WHERE stream_id = ? AND login NOT IN ({holes})
+        WHERE stream_id IN ({marks}) AND login NOT IN ({holes})
         GROUP BY login ORDER BY m DESC, login LIMIT ?
-        """, (stream_id, *skip, top)).fetchall()
+        """, (*sids, *skip, top)).fetchall()
 
     parts = [
         "\n".join(head),
@@ -409,7 +412,7 @@ def stream_report(db, stream_id: str, top: int = 10) -> str:
             [(login, f"{int(min(1.0, m / mins) * 100)}%", f"{m / 60:.1f}")
              for login, m in stayed], ("viewer", "stay", "hours")),
         "Most messages\n\n" + _table(chatty, ("viewer", "msgs")),
-        raiders(db, top=top, focus=stream_id),
+        raiders(db, top=top, sids=sids),
     ]
     # Width from the tables, not the title: one long stream name shouldn't
     # stretch every rule across the message.
@@ -418,7 +421,28 @@ def stream_report(db, stream_id: str, top: int = 10) -> str:
     return f"\n{rule}\n".join(parts)
 
 
-REPORTS = {"regulars": regulars, "raiders": raiders, "viewers": viewers, "emotes": emotes,
+def stream_report(db, stream_id: str, top: int = 10) -> str:
+    """One stream. Posted to the console channel when a stream ends."""
+    row = db.execute("SELECT title, game FROM streams WHERE id = ?", (stream_id,)).fetchone()
+    if not row:
+        return f"(no record of stream {stream_id})"
+    title, game = row
+    return _report(db, [stream_id],
+                   f"Stream report — {title or 'untitled'}" + (f" [{game}]" if game else ""),
+                   top)
+
+
+def recent(db, *, since=0, top=10, last=3, **_) -> str:
+    """The same report over the last `last` streams together."""
+    sel = _streams(db, since)[-last:] if last else _streams(db, since)
+    if not sel:
+        return "(no streams recorded yet)"
+    span = _day(sel[0][1]) + (f" → {_day(sel[-1][1])}" if len(sel) > 1 else "")
+    return _report(db, [s for s, _, _ in sel],
+                   f"Stream report — last {len(sel)} streams ({span})", top)
+
+
+REPORTS = {"regulars": regulars, "raiders": raiders, "recent": recent, "viewers": viewers, "emotes": emotes,
            "streams": streams, "user": user}
 
 
