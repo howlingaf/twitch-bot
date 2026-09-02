@@ -172,13 +172,15 @@ def regulars(db, *, since=0, top=25, **_) -> str:
     head = (f"Regulars — {n} stream(s){' since ' + _day(since) if since else ''}, top {top}\n"
             f"score = 50·attendance + 20·stay + 15·chat + 15·support, "
             f"halved per {RECENCY_HALF_LIFE} streams missed\n")
+    # Stream count and last-seen date still drive the score, but the report
+    # header already says how many streams it covers and when — printing them
+    # per row made the table wider than it was informative.
     return head + "\n" + _table([(
-        s, v["login"], f"{v['streams']}/{n}",
+        s, v["login"],
         f"{int(v['stay'] * 100)}%" if v["stay"] is not None else "-",
         f"{v['minutes'] / 60:.1f}", v["msgs"],
         "sub" if v["sub"] else ("supporter" if v["supporter"] else ""),
-        _day(v["last_stream_ts"]),
-    ) for s, v in rows[:top]], ("score", "viewer", "streams", "stay", "hours", "msgs", "", "last seen"))
+    ) for s, v in rows[:top]], ("score", "viewer", "stay", "hours", "msgs", ""))
 
 
 def viewers(db, *, since=0, top=25, **_) -> str:
