@@ -170,6 +170,16 @@ def _score(v: dict, n_streams: int) -> float:
     return (60 * attendance + 25 * (v["stay"] or 0) + 15 * chat) * recency
 
 
+def _score_one(stay: float | None, msgs: int) -> float:
+    """Score within a single stream.
+
+    Attendance and recency are both statements about a run of streams, so
+    inside one they're constants — attendance 1 for everyone present, recency
+    1 for everyone. Only stay and chat vary, keeping their 25:15 lean.
+    """
+    return 62.5 * (stay or 0) + 37.5 * min(1.0, msgs / CHAT_SATURATE)
+
+
 def regulars(db, *, since=0, top=25, focus=None, **_) -> str:
     """Standing across every stream in scope. `focus` narrows the stay/hours/msgs
     columns to that one stream — the score stays cross-stream, since that's what
@@ -185,15 +195,28 @@ def regulars(db, *, since=0, top=25, focus=None, **_) -> str:
     # Rank on the true score and only round for display: sorting on the
     # rounded value made every near-tie fall back to alphabetical, which read
     # as an unsorted table (a 30-hour regular below a 4-hour one, both "82").
+    def score_of(v):
+        if not focus:
+            return _score(v, n)
+        mins = v["minutes_by"].get(focus)
+        stay = min(1.0, mins / focus_mins) if mins is not None else None
+        return _score_one(stay, v["msgs_by"].get(focus, 0))
+
     rows = sorted(
-        ((_score(v, n), v) for v in _per_viewer(db, since, streams)),
+        ((score_of(v), v) for v in _per_viewer(db, since, streams)),
         key=lambda r: (-r[0], r[1]["login"]),
     )
-    scope = "this stream" if focus else f"{n} stream(s)"
-    head = (f"Regulars — top {top}, {scope}"
-            f"{' since ' + _day(since) if since and not focus else ''}\n"
-            f"score = 60·attendance + 25·stay + 15·chat across "
-            f"{n} stream(s), halved per {RECENCY_HALF_LIFE} streams missed\n")
+    if focus:   # people who weren't there don't belong in this stream's table
+        rows = [(sc, v) for sc, v in rows
+                if focus in v["minutes_by"] or focus in v["msgs_by"]]
+    if focus:
+        head = (f"Regulars — top {top}, this stream\n"
+                f"score = 62.5·stay + 37.5·chat\n")
+    else:
+        head = (f"Regulars — top {top}, {n} stream(s)"
+                f"{' since ' + _day(since) if since else ''}\n"
+                f"score = 60·attendance + 25·stay + 15·chat, "
+                f"halved per {RECENCY_HALF_LIFE} streams missed\n")
     def cols(v):
         """(stay, hours, msgs) — for the focused stream, or across all of them."""
         if not focus:
@@ -350,7 +373,7 @@ def stream_report(db, stream_id: str, top: int = 10) -> str:
     return ("\n".join(head) + "\n\nThis stream (top chatters)\n\n"
             + _table(chatty, ("viewer", "msgs", "minutes")) + "\n\n"
             + regulars(db, top=top, focus=stream_id)
-            + "\n\n" + raiders(db, top=top))
+            + "\n\n" + raiders(db, top=top, focus=stream_id))
 
 
 REPORTS = {"regulars": regulars, "raiders": raiders, "viewers": viewers, "emotes": emotes,
