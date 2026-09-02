@@ -165,8 +165,11 @@ def regulars(db, *, since=0, top=25, **_) -> str:
     if not streams:
         return "(no streams recorded yet)"
     n = len(streams)
+    # Rank on the true score and only round for display: sorting on the
+    # rounded value made every near-tie fall back to alphabetical, which read
+    # as an unsorted table (a 30-hour regular below a 4-hour one, both "82").
     rows = sorted(
-        ((round(_score(v, n)), v) for v in _per_viewer(db, since, streams)),
+        ((_score(v, n), v) for v in _per_viewer(db, since, streams)),
         key=lambda r: (-r[0], r[1]["login"]),
     )
     head = (f"Regulars — {n} stream(s){' since ' + _day(since) if since else ''}, top {top}\n"
@@ -176,7 +179,7 @@ def regulars(db, *, since=0, top=25, **_) -> str:
     # header already says how many streams it covers and when — printing them
     # per row made the table wider than it was informative.
     return head + "\n" + _table([(
-        s, v["login"],
+        round(s), v["login"],
         f"{int(v['stay'] * 100)}%" if v["stay"] is not None else "-",
         f"{v['minutes'] / 60:.1f}", v["msgs"],
         "sub" if v["sub"] else ("supporter" if v["supporter"] else ""),
@@ -285,7 +288,8 @@ def stream_report(db, stream_id: str, top: int = 10) -> str:
         """
         SELECT m.login, COUNT(*) AS n,
                (SELECT COUNT(*) FROM presence p WHERE p.stream_id = m.stream_id AND p.login = m.login)
-        FROM messages m WHERE m.stream_id = ? GROUP BY m.login ORDER BY n DESC LIMIT ?
+        FROM messages m WHERE m.stream_id = ? GROUP BY m.login
+        ORDER BY n DESC, 3 DESC, m.login LIMIT ?
         """, (stream_id, top)).fetchall()
     return ("\n".join(head) + "\n\nThis stream (top chatters)\n\n"
             + _table(chatty, ("viewer", "msgs", "minutes")) + "\n\n" + regulars(db, top=top))
