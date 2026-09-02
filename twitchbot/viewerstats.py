@@ -377,11 +377,14 @@ def stream_report(db, stream_id: str, top: int = 10) -> str:
     head = [f"Stream report — {title or 'untitled'}" + (f" [{game}]" if game else ""),
             f"{mins // 60}h{mins % 60:02d}m · {present} in chat · {chatters} chatted · "
             f"{msgs} messages"]
-    line = f"{newbies} first-timers"
+    head.append(f"{newbies} first-timers"
+                + (f" · {returning} returning" if prior else ""))
     if prior and present:
-        line += (f" · {returning} returning · {returning * 100 // present}% returning "
-                 f"vs {regular * 100 // present}% regular")
-    head.append(line)
+        # Both are shares of everyone present, not of each other -- regulars are
+        # a subset of returning, and naming the denominator stops the second
+        # number reading as "22% of the returning".
+        head.append(f"{returning * 100 // present}% returning vs "
+                    f"{regular * 100 // present}% regular (of {present} in chat)")
     if events:
         head.append("support: " + _support_line(events))
     chatty = db.execute(
