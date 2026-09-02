@@ -19,6 +19,13 @@ BROADCASTER_ID = os.getenv("BROADCASTER_ID")
 # for every minute of every stream by definition, so ranking them among the
 # regulars only pushes a real viewer off the list.
 BROADCASTER_LOGIN = (os.getenv("BROADCASTER_LOGIN") or "howlingaf").lower()
+BOT_LOGIN = (os.getenv("BOT_LOGIN") or "hairyrugaf").lower()
+# Logins kept out of the viewer reports: accounts that sit in chat for every
+# minute of every stream without being viewers. Dropping the support weight
+# from the regulars score let these float to the top, since presence is all
+# they have. Comma-separated additions go in REPORT_IGNORE.
+REPORT_IGNORE = {BROADCASTER_LOGIN, BOT_LOGIN} | {
+    x.strip().lower() for x in (os.getenv("REPORT_IGNORE") or "").split(",") if x.strip()}
 
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")

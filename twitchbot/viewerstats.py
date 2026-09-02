@@ -11,7 +11,7 @@ import json
 import re
 from collections import Counter, defaultdict
 
-from .config import BROADCASTER_LOGIN
+from .config import BROADCASTER_LOGIN, REPORT_IGNORE
 from datetime import datetime, timezone
 
 import aiohttp
@@ -114,7 +114,7 @@ def _per_viewer(db, since: int, streams: list) -> list[dict]:
 
     out = []
     for login in set(minutes) | set(msgs):
-        if login == BROADCASTER_LOGIN:
+        if login in REPORT_IGNORE:
             continue
         attended = set(minutes[login]) | set(msgs[login])
         # Stay is only measurable where presence ran; a stream known from
@@ -146,10 +146,14 @@ def _per_viewer(db, since: int, streams: list) -> list[dict]:
 # One number per viewer, 0-100. Weights are a judgement call, written down
 # so they can be argued with:
 #
-#   attendance  50   streams they showed up to / streams held
-#   stay        20   of the streams they attended, how much of each they stayed
+#   attendance  60   streams they showed up to / streams held
+#   stay        25   of the streams they attended, how much of each they stayed
 #   chat        15   messages per attended stream, saturating at CHAT_SATURATE
-#   support     15   sub badge, or any sub / gift / bits / raid event
+#
+# Support used to carry 15 of these points. It doesn't any more: paying is not
+# what makes someone a regular, and it flattered a viewer who dropped in for
+# ten minutes with bits over one who turns up every night. Raids get their own
+# list instead, where the number is the thing rather than a bump to a score.
 #
 # then scaled by recency: halved for every RECENCY_HALF_LIFE streams missed
 # since they were last seen, so a former regular fades instead of squatting
@@ -161,10 +165,9 @@ RECENCY_HALF_LIFE = 4
 def _score(v: dict, n_streams: int) -> float:
     attendance = v["streams"] / n_streams
     chat = min(1.0, (v["msgs"] / v["streams"]) / CHAT_SATURATE)
-    support = 1.0 if (v["sub"] or v["supporter"]) else 0.0
     missed = n_streams - 1 - v["last_idx"]
     recency = 0.5 ** (missed / RECENCY_HALF_LIFE)
-    return (50 * attendance + 20 * (v["stay"] or 0) + 15 * chat + 15 * support) * recency
+    return (60 * attendance + 25 * (v["stay"] or 0) + 15 * chat) * recency
 
 
 def regulars(db, *, since=0, top=25, focus=None, **_) -> str:
@@ -189,7 +192,7 @@ def regulars(db, *, since=0, top=25, focus=None, **_) -> str:
     scope = "this stream" if focus else f"{n} stream(s)"
     head = (f"Regulars — top {top}, {scope}"
             f"{' since ' + _day(since) if since and not focus else ''}\n"
-            f"score = 50·attendance + 20·stay + 15·chat + 15·support across "
+            f"score = 60·attendance + 25·stay + 15·chat across "
             f"{n} stream(s), halved per {RECENCY_HALF_LIFE} streams missed\n")
     def cols(v):
         """(stay, hours, msgs) — for the focused stream, or across all of them."""
@@ -207,8 +210,35 @@ def regulars(db, *, since=0, top=25, focus=None, **_) -> str:
     # per row made the table wider than it was informative.
     return head + "\n" + _table([(
         round(s), v["login"], *cols(v),
-        "sub" if v["sub"] else ("supporter" if v["supporter"] else ""),
+        "sub" if v["sub"] else "",
     ) for s, v in rows[:top]], ("score", "viewer", "stay", "hours", "msgs", ""))
+
+
+def raiders(db, *, since=0, top=25, focus=None, **_) -> str:
+    """Who has raided in, and how many people they brought.
+
+    Raids sit apart from the regulars score deliberately: bringing 39 people
+    once is worth knowing on its own terms, not as fifteen points blended into
+    an attendance number.
+    """
+    streams = _streams(db, since)
+    ids = {sid for sid, _, _ in streams}
+    rows = [r for r in db.execute(
+        "SELECT login, COUNT(*), SUM(amount), stream_id FROM events "
+        "WHERE kind = 'raid' AND ts >= ? AND login NOT IN (%s) GROUP BY login, stream_id"
+        % ",".join("?" * len(REPORT_IGNORE)),
+        (since, *sorted(REPORT_IGNORE))) if r[3] in ids and (focus is None or r[3] == focus)]
+    if not rows:
+        return "Raiders — none" + (" this stream" if focus else "")
+    by_login = defaultdict(lambda: [0, 0])
+    for login, c, viewers_in, _ in rows:
+        by_login[login][0] += c
+        by_login[login][1] += viewers_in or 0
+    ranked = sorted(by_login.items(), key=lambda kv: (-kv[1][1], -kv[1][0], kv[0]))
+    scope = "this stream" if focus else f"{len(streams)} stream(s)"
+    return (f"Raiders — {scope}\n\n" + _table(
+        [(login, c, v) for login, (c, v) in ranked[:top]],
+        ("viewer", "raids", "viewers")))
 
 
 def viewers(db, *, since=0, top=25, **_) -> str:
@@ -313,15 +343,17 @@ def stream_report(db, stream_id: str, top: int = 10) -> str:
         """
         SELECT m.login, COUNT(*) AS n,
                (SELECT COUNT(*) FROM presence p WHERE p.stream_id = m.stream_id AND p.login = m.login)
-        FROM messages m WHERE m.stream_id = ? AND m.login != ? GROUP BY m.login
+        FROM messages m WHERE m.stream_id = ? AND m.login NOT IN (%s) GROUP BY m.login
         ORDER BY n DESC, 3 DESC, m.login LIMIT ?
-        """, (stream_id, BROADCASTER_LOGIN, top)).fetchall()
+        """ % ",".join("?" * len(REPORT_IGNORE)),
+        (stream_id, *sorted(REPORT_IGNORE), top)).fetchall()
     return ("\n".join(head) + "\n\nThis stream (top chatters)\n\n"
             + _table(chatty, ("viewer", "msgs", "minutes")) + "\n\n"
-            + regulars(db, top=top, focus=stream_id))
+            + regulars(db, top=top, focus=stream_id)
+            + "\n\n" + raiders(db, top=top))
 
 
-REPORTS = {"regulars": regulars, "viewers": viewers, "emotes": emotes,
+REPORTS = {"regulars": regulars, "raiders": raiders, "viewers": viewers, "emotes": emotes,
            "streams": streams, "user": user}
 
 
