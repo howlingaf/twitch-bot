@@ -49,6 +49,11 @@ async def console_lines(text: str) -> bool:
     return bool(await _post("/twitch-log", {"lines": text.split("\n")}))
 
 
+async def stream_report(embeds: list[dict]) -> bool:
+    """Post the end-of-stream report as embeds in #twitch-bot-console."""
+    return bool(await _post("/twitch-report", {"embeds": embeds}))
+
+
 async def alert_owner(message: str) -> bool:
     """Ping the owner in the console channel. Best effort, like everything here."""
     return bool(await _post("/alert", {"message": message}))

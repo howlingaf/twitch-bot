@@ -42,7 +42,8 @@ from .twitch_api import (
 from .chatstore import ChatStore, parse_emotes
 from . import viewerstats
 from .helpers import leetcode_slug, resolve_problem_name
-from .notify import alert_owner, console_lines, stream_alert, stream_alert_vod
+from .notify import (alert_owner, console_lines, stream_alert, stream_alert_vod,
+                     stream_report as notify_stream_report)
 
 # Ad cadence. The period is measured warning-to-warning, so a break lands at
 # the same point in every hour of a stream.
@@ -478,8 +479,11 @@ class Bot(commands.Bot):
         """The stream's chat numbers and the regulars ranking, into
         #twitch-bot-console. Best effort — a failure is a log line."""
         try:
-            text = viewerstats.stream_report(self.store.db, self.stream_id)
-            ok = await console_lines(text)
+            embeds = viewerstats.stream_report_embeds(self.store.db, self.stream_id)
+            ok = await notify_stream_report(embeds)
+            if not ok:      # embeds failed; the numbers still matter more than the format
+                ok = await console_lines(
+                    viewerstats.stream_report(self.store.db, self.stream_id))
             logger.info("Stream report posted to console: %s", ok)
         except Exception:
             logger.exception("Failed to post stream report")

@@ -159,6 +159,8 @@ def _per_viewer(db, since: int, streams: list) -> list[dict]:
 # since they were last seen, so a former regular fades instead of squatting
 # on the top of the list forever.
 CHAT_SATURATE = 10
+# Stay at or above this is a lurker rather than a visit, and gets its own list.
+LURKER_STAY = 0.90
 RECENCY_HALF_LIFE = 4
 
 
@@ -337,8 +339,8 @@ def user(db, *, name="", since=0, top=25, **_) -> str:
     return "\n\n".join(parts)
 
 
-def _report(db, sids: list[str], headline: str, top: int) -> str:
-    """Who stayed, who talked, who raided, over one stream or many.
+def _sections(db, sids: list[str], headline: str, top: int) -> dict:
+    """The report's parts, before they're rendered as text or as embeds.
 
     Everything before the window's earliest stream is the history that
     "returning" is measured against, so widening the window necessarily
@@ -377,18 +379,17 @@ def _report(db, sids: list[str], headline: str, top: int) -> str:
         f"SELECT kind, COUNT(*), SUM(amount) FROM events WHERE stream_id IN ({marks}) "
         f"GROUP BY kind", tuple(sids)).fetchall()
 
-    head = [headline,
-            f"{mins // 60}h{mins % 60:02d}m · {present} in chat · {chatters} chatted · "
-            f"{msgs} messages"]
-    head.append(f"{newbies} first-timers" + (f" · {returning} returning" if prior else ""))
+    stats = [f"{mins // 60}h{mins % 60:02d}m · {present} in chat · {chatters} chatted · "
+             f"{msgs} messages",
+             f"{newbies} first-timers" + (f" · {returning} returning" if prior else "")]
     if prior and present:
         # Both are shares of everyone present, not of each other — regulars are
         # a subset of returning, and naming the denominator stops the second
         # number reading as "22% of the returning".
-        head.append(f"{returning * 100 // present}% returning vs "
-                    f"{regular * 100 // present}% regular (of {present} in chat)")
+        stats.append(f"{returning * 100 // present}% returning vs "
+                     f"{regular * 100 // present}% regular (of {present} in chat)")
     if events:
-        head.append("support: " + _support_line(events))
+        stats.append("support: " + _support_line(events))
 
     chatty = db.execute(
         f"""
@@ -397,28 +398,71 @@ def _report(db, sids: list[str], headline: str, top: int) -> str:
         GROUP BY login ORDER BY n DESC, login LIMIT ?
         """, (*sids, *skip, top)).fetchall()
 
-    # Stay and messages are different kinds of viewer, so they get a list each
-    # rather than one table ranking them against each other.
+    # Everyone, not the top N: the list gets split by stay and each half needs
+    # its own N. Someone at 89% belongs at the top of one list, not off both.
     stayed = db.execute(
         f"""
         SELECT login, COUNT(*) AS m FROM presence
         WHERE stream_id IN ({marks}) AND login NOT IN ({holes})
-        GROUP BY login ORDER BY m DESC, login LIMIT ?
-        """, (*sids, *skip, top)).fetchall()
+        GROUP BY login ORDER BY m DESC, login
+        """, (*sids, *skip)).fetchall()
+    rows = [(login, min(1.0, m / mins), m / 60) for login, m in stayed]
+    fmt = [(login, f"{int(pct * 100)}%", f"{hrs:.1f}") for login, pct, hrs in rows]
 
-    parts = [
-        "\n".join(head),
-        "Longest stay\n\n" + _table(
-            [(login, f"{int(min(1.0, m / mins) * 100)}%", f"{m / 60:.1f}")
-             for login, m in stayed], ("viewer", "stay", "hours")),
-        "Most messages\n\n" + _table(chatty, ("viewer", "msgs")),
-        raiders(db, top=top, sids=sids),
-    ]
+    return {
+        "headline": headline,
+        "stats": stats,
+        "lurkers": _table([r for r, (_, p, _) in zip(fmt, rows) if p >= LURKER_STAY][:top],
+                          ("viewer", "stay", "hours")),
+        "stay": _table([r for r, (_, p, _) in zip(fmt, rows) if p < LURKER_STAY][:top],
+                       ("viewer", "stay", "hours")),
+        "msgs": _table(chatty, ("viewer", "msgs")),
+        "raiders": raiders(db, top=top, sids=sids).split("\n\n", 1)[-1]
+                   if "\n\n" in raiders(db, top=top, sids=sids) else "",
+    }
+
+
+def _report(db, sids: list[str], headline: str, top: int) -> str:
+    """The plain-text form, for the console command."""
+    sec = _sections(db, sids, headline, top)
+    parts = ["\n".join([sec["headline"], *sec["stats"]])]
+    for title, key in (("Top lurkers (90%+)", "lurkers"), ("Longest stay", "stay"),
+                       ("Most messages", "msgs"), ("Raiders", "raiders")):
+        if sec[key]:
+            parts.append(f"{title}\n\n{sec[key]}")
     # Width from the tables, not the title: one long stream name shouldn't
     # stretch every rule across the message.
     body = [l for p in parts[1:] for l in p.split("\n")]
     rule = "\u2500" * min(60, max([32] + [len(l) for l in body]))
     return f"\n{rule}\n".join(parts)
+
+
+def _fence(table: str) -> str:
+    return f"```\n{table}\n```"
+
+
+def report_embeds(db, sids: list[str], headline: str, top: int = 10) -> list[dict]:
+    """The same report as Discord embeds: the numbers and who raided, then the
+    two presence lists, then who talked."""
+    sec = _sections(db, sids, headline, top)
+    first = {"title": sec["headline"][:256], "description": "\n".join(sec["stats"])[:4096]}
+    if sec["raiders"]:
+        first["fields"] = [{"name": "Raiders", "value": _fence(sec["raiders"])[:1024]}]
+    second = {"fields": [f for f in (
+        {"name": f"Top lurkers ({int(LURKER_STAY * 100)}%+)",
+         "value": _fence(sec["lurkers"])[:1024]} if sec["lurkers"] else None,
+        {"name": "Longest stay", "value": _fence(sec["stay"])[:1024]} if sec["stay"] else None,
+    ) if f]}
+    third = {"fields": [{"name": "Most messages", "value": _fence(sec["msgs"])[:1024]}]}
+    return [e for e in (first, second, third) if e.get("fields") or e.get("description")]
+
+
+def stream_report_embeds(db, stream_id: str, top: int = 10) -> list[dict]:
+    row = db.execute("SELECT title, game FROM streams WHERE id = ?", (stream_id,)).fetchone()
+    title, game = row if row else ("untitled", "")
+    return report_embeds(db, [stream_id],
+                         f"Stream report — {title or 'untitled'}" + (f" [{game}]" if game else ""),
+                         top)
 
 
 def stream_report(db, stream_id: str, top: int = 10) -> str:
