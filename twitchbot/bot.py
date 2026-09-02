@@ -21,6 +21,7 @@ from .config import (
     SPOTIFY_REDIRECT_URI,
     DISCORD_BOT_URL,
     RECAP_SECRET,
+    BROADCASTER_LOGIN,
 )
 from .logger import logger
 from .overlay import overlay_broadcast
@@ -118,7 +119,7 @@ _RECAP_SKIP_HOSTS = ("github.com", "leetcode.com", "discord.com", "discord.gg", 
 
 # Twitch usernames the bot keys behavior off of. Update these on a rename.
 BOT_NICK = "hairyrugaf"      # the bot's own account
-BROADCASTER = "howlingaf"    # the channel owner who streams
+BROADCASTER = BROADCASTER_LOGIN    # the channel owner who streams
 
 
 class Bot(commands.Bot):

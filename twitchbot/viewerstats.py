@@ -10,6 +10,8 @@ import argparse
 import json
 import re
 from collections import Counter, defaultdict
+
+from .config import BROADCASTER_LOGIN
 from datetime import datetime, timezone
 
 import aiohttp
@@ -112,6 +114,8 @@ def _per_viewer(db, since: int, streams: list) -> list[dict]:
 
     out = []
     for login in set(minutes) | set(msgs):
+        if login == BROADCASTER_LOGIN:
+            continue
         attended = set(minutes[login]) | set(msgs[login])
         # Stay is only measurable where presence ran; a stream known from
         # messages alone (VOD backfill, pre-scope) is unknown, not 0.
@@ -129,6 +133,9 @@ def _per_viewer(db, since: int, streams: list) -> list[dict]:
             "last_ts": last.get(login),
             "last_idx": last_idx,
             "last_stream_ts": streams[last_idx][1],
+            # kept per stream so a report can narrow to one without re-querying
+            "minutes_by": dict(minutes[login]),
+            "msgs_by": dict(msgs[login]),
         })
     return out
 
@@ -160,11 +167,18 @@ def _score(v: dict, n_streams: int) -> float:
     return (50 * attendance + 20 * (v["stay"] or 0) + 15 * chat + 15 * support) * recency
 
 
-def regulars(db, *, since=0, top=25, **_) -> str:
+def regulars(db, *, since=0, top=25, focus=None, **_) -> str:
+    """Standing across every stream in scope. `focus` narrows the stay/hours/msgs
+    columns to that one stream — the score stays cross-stream, since that's what
+    being a regular means, but "hours" then reads as hours that night rather
+    than a running total nobody expects at the foot of a stream report."""
     streams = _streams(db, since)
     if not streams:
         return "(no streams recorded yet)"
     n = len(streams)
+    focus_mins = next((m for sid, _, m in streams if sid == focus), None)
+    if focus is not None and focus_mins is None:
+        focus = None            # unknown stream: fall back to the running total
     # Rank on the true score and only round for display: sorting on the
     # rounded value made every near-tie fall back to alphabetical, which read
     # as an unsorted table (a 30-hour regular below a 4-hour one, both "82").
@@ -172,16 +186,27 @@ def regulars(db, *, since=0, top=25, **_) -> str:
         ((_score(v, n), v) for v in _per_viewer(db, since, streams)),
         key=lambda r: (-r[0], r[1]["login"]),
     )
-    head = (f"Regulars — {n} stream(s){' since ' + _day(since) if since else ''}, top {top}\n"
-            f"score = 50·attendance + 20·stay + 15·chat + 15·support, "
-            f"halved per {RECENCY_HALF_LIFE} streams missed\n")
+    scope = "this stream" if focus else f"{n} stream(s)"
+    head = (f"Regulars — top {top}, {scope}"
+            f"{' since ' + _day(since) if since and not focus else ''}\n"
+            f"score = 50·attendance + 20·stay + 15·chat + 15·support across "
+            f"{n} stream(s), halved per {RECENCY_HALF_LIFE} streams missed\n")
+    def cols(v):
+        """(stay, hours, msgs) — for the focused stream, or across all of them."""
+        if not focus:
+            stay = f"{int(v['stay'] * 100)}%" if v["stay"] is not None else "-"
+            return stay, f"{v['minutes'] / 60:.1f}", v["msgs"]
+        mins = v["minutes_by"].get(focus)
+        if mins is None:
+            return "-", "-", v["msgs_by"].get(focus, 0)
+        return (f"{int(min(1.0, mins / focus_mins) * 100)}%",
+                f"{mins / 60:.1f}", v["msgs_by"].get(focus, 0))
+
     # Stream count and last-seen date still drive the score, but the report
     # header already says how many streams it covers and when — printing them
     # per row made the table wider than it was informative.
     return head + "\n" + _table([(
-        round(s), v["login"],
-        f"{int(v['stay'] * 100)}%" if v["stay"] is not None else "-",
-        f"{v['minutes'] / 60:.1f}", v["msgs"],
+        round(s), v["login"], *cols(v),
         "sub" if v["sub"] else ("supporter" if v["supporter"] else ""),
     ) for s, v in rows[:top]], ("score", "viewer", "stay", "hours", "msgs", ""))
 
@@ -288,11 +313,12 @@ def stream_report(db, stream_id: str, top: int = 10) -> str:
         """
         SELECT m.login, COUNT(*) AS n,
                (SELECT COUNT(*) FROM presence p WHERE p.stream_id = m.stream_id AND p.login = m.login)
-        FROM messages m WHERE m.stream_id = ? GROUP BY m.login
+        FROM messages m WHERE m.stream_id = ? AND m.login != ? GROUP BY m.login
         ORDER BY n DESC, 3 DESC, m.login LIMIT ?
-        """, (stream_id, top)).fetchall()
+        """, (stream_id, BROADCASTER_LOGIN, top)).fetchall()
     return ("\n".join(head) + "\n\nThis stream (top chatters)\n\n"
-            + _table(chatty, ("viewer", "msgs", "minutes")) + "\n\n" + regulars(db, top=top))
+            + _table(chatty, ("viewer", "msgs", "minutes")) + "\n\n"
+            + regulars(db, top=top, focus=stream_id))
 
 
 REPORTS = {"regulars": regulars, "viewers": viewers, "emotes": emotes,

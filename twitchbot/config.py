@@ -15,6 +15,10 @@ ACCESS_TOKEN = os.getenv("ACCESS_TOKEN")
 # (.twitch_tokens.json, written by scripts/twitch_auth.py) takes precedence.
 REFRESH_TOKEN = os.getenv("REFRESH_TOKEN")
 BROADCASTER_ID = os.getenv("BROADCASTER_ID")
+# The channel owner's login. Excluded from the viewer reports: they're present
+# for every minute of every stream by definition, so ranking them among the
+# regulars only pushes a real viewer off the list.
+BROADCASTER_LOGIN = (os.getenv("BROADCASTER_LOGIN") or "howlingaf").lower()
 
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
