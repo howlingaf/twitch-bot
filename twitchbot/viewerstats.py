@@ -403,12 +403,19 @@ def stream_report(db, stream_id: str, top: int = 10) -> str:
         GROUP BY login ORDER BY m DESC, login LIMIT ?
         """, (stream_id, *skip, top)).fetchall()
 
-    return ("\n".join(head)
-            + "\n\nLongest stay\n\n" + _table(
-                [(login, f"{int(min(1.0, m / mins) * 100)}%", f"{m / 60:.1f}")
-                 for login, m in stayed], ("viewer", "stay", "hours"))
-            + "\n\nMost messages\n\n" + _table(chatty, ("viewer", "msgs"))
-            + "\n\n" + raiders(db, top=top, focus=stream_id))
+    parts = [
+        "\n".join(head),
+        "Longest stay\n\n" + _table(
+            [(login, f"{int(min(1.0, m / mins) * 100)}%", f"{m / 60:.1f}")
+             for login, m in stayed], ("viewer", "stay", "hours")),
+        "Most messages\n\n" + _table(chatty, ("viewer", "msgs")),
+        raiders(db, top=top, focus=stream_id),
+    ]
+    # Width from the tables, not the title: one long stream name shouldn't
+    # stretch every rule across the message.
+    body = [l for p in parts[1:] for l in p.split("\n")]
+    rule = "\u2500" * min(60, max([32] + [len(l) for l in body]))
+    return f"\n{rule}\n".join(parts)
 
 
 REPORTS = {"regulars": regulars, "raiders": raiders, "viewers": viewers, "emotes": emotes,
