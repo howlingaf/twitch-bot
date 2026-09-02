@@ -352,19 +352,38 @@ def stream_report(db, stream_id: str, top: int = 10) -> str:
     msgs, chatters, newbies = db.execute(
         "SELECT COUNT(*), COUNT(DISTINCT login), COALESCE(SUM(is_first), 0) FROM messages "
         "WHERE stream_id = ?", (stream_id,)).fetchone()
-    present = db.execute(
-        "SELECT COUNT(DISTINCT login) FROM presence WHERE stream_id = ?", (stream_id,)).fetchone()[0]
+    skip = sorted(REPORT_IGNORE)
+    holes = ",".join("?" * len(skip))
+    here = {l for (l,) in db.execute(
+        f"SELECT DISTINCT login FROM presence WHERE stream_id = ? AND login NOT IN ({holes})",
+        (stream_id, *skip))}
+    present = len(here)
+
+    # How many of tonight's room had been here before. "Returning" is anyone
+    # seen in an earlier recorded stream; "regular" is anyone seen in more than
+    # half of them — a share rather than a count, so it keeps meaning the same
+    # thing as the record grows.
+    started = next((t for sid, t, _ in _streams(db, 0) if sid == stream_id), 0)
+    prior = [sid for sid, t, _ in _streams(db, 0) if t < started]
+    attended = Counter()
+    for sid in prior:
+        for (l,) in db.execute("SELECT DISTINCT login FROM presence WHERE stream_id = ?", (sid,)):
+            attended[l] += 1
+    returning = sum(1 for l in here if attended[l])
+    regular = sum(1 for l in here if attended[l] * 2 > len(prior))
     events = db.execute(
         "SELECT kind, COUNT(*), SUM(amount) FROM events WHERE stream_id = ? GROUP BY kind",
         (stream_id,)).fetchall()
     head = [f"Stream report — {title or 'untitled'}" + (f" [{game}]" if game else ""),
             f"{mins // 60}h{mins % 60:02d}m · {present} in chat · {chatters} chatted · "
-            f"{msgs} messages · {newbies} first-timers"]
+            f"{msgs} messages"]
+    line = f"{newbies} first-timers"
+    if prior and present:
+        line += (f" · {returning} returning · {returning * 100 // present}% returning "
+                 f"vs {regular * 100 // present}% regular")
+    head.append(line)
     if events:
         head.append("support: " + _support_line(events))
-    skip = sorted(REPORT_IGNORE)
-    holes = ",".join("?" * len(skip))
-
     chatty = db.execute(
         f"""
         SELECT login, COUNT(*) AS n FROM messages
