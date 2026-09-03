@@ -230,6 +230,35 @@ async def get_follow_info(user_id: str) -> tuple[bool, str | None]:
     return True, data[0]["followed_at"] if data else None
 
 
+async def get_new_followers(since_iso: str) -> list[tuple[str, str, str]] | None:
+    """Everyone who followed at or after since_iso, as (id, login, followed_at).
+
+    Helix returns followers newest first, so paging stops at the first one
+    older than the cutoff rather than walking the whole follower list. Needs
+    moderator:read:followers. None means the lookup failed, which is not the
+    same as nobody following.
+    """
+    base = ("https://api.twitch.tv/helix/channels/followers"
+            f"?broadcaster_id={BROADCASTER_ID}&first=100")
+    out: list[tuple[str, str, str]] = []
+    cursor = ""
+    for _ in range(20):         # 2000 follows is far past anything one stream does
+        url = base + (f"&after={cursor}" if cursor else "")
+        status, body = await _twitch_request("GET", url)
+        if status != 200:
+            logger.error("Get Followers failed. HTTP %s: %s", status, body)
+            return None
+        data = json.loads(body)
+        for u in data.get("data", []):
+            if u["followed_at"] < since_iso:
+                return out
+            out.append((u["user_id"], u["user_login"], u["followed_at"]))
+        cursor = data.get("pagination", {}).get("cursor", "")
+        if not cursor:
+            return out
+    return out
+
+
 async def get_chatters() -> list[tuple[str, str]] | None:
     """Everyone currently connected to the channel's chat, as (id, login).
 

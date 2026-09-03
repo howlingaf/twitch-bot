@@ -409,9 +409,22 @@ def _sections(db, sids: list[str], headline: str, top: int) -> dict:
     rows = [(login, min(1.0, m / mins), m / 60) for login, m in stayed]
     fmt = [(login, f"{int(pct * 100)}%", f"{hrs:.1f}") for login, pct, hrs in rows]
 
+    def who(kinds, amounts=True):
+        """`login xN` for everyone with one of these event kinds, biggest first."""
+        rows = db.execute(
+            f"SELECT login, COUNT(*), SUM(amount) FROM events WHERE stream_id IN ({marks}) "
+            f"AND kind IN ({','.join('?' * len(kinds))}) AND login NOT IN ({holes}) "
+            f"GROUP BY login", (*sids, *kinds, *skip)).fetchall()
+        rows.sort(key=lambda r: (-(r[2] or 0), -r[1], r[0]))
+        names = [f"{l} x{a}" if amounts and a else l for l, _, a in rows]
+        return _wrap(names)
+
     return {
         "headline": headline,
         "stats": stats,
+        "cheered": who(("bits",)),
+        "followed": who(("follow",), amounts=False),
+        "subscribed": who(("sub", "resub", "subgift", "submysterygift"), amounts=False),
         "lurkers": _table([r for r, (_, p, _) in zip(fmt, rows) if p >= LURKER_STAY][:top],
                           ("viewer", "stay", "hours")),
         "stay": _table([r for r, (_, p, _) in zip(fmt, rows) if p < LURKER_STAY][:top],
@@ -426,7 +439,9 @@ def _report(db, sids: list[str], headline: str, top: int) -> str:
     """The plain-text form, for the console command."""
     sec = _sections(db, sids, headline, top)
     parts = ["\n".join([sec["headline"], *sec["stats"]])]
-    for title, key in (("Top lurkers (90%+)", "lurkers"), ("Longest stay", "stay"),
+    for title, key in (("Cheered", "cheered"), ("Followed", "followed"),
+                       ("Subscribed", "subscribed"),
+                       ("Top lurkers (90%+)", "lurkers"), ("Longest stay", "stay"),
                        ("Most messages", "msgs"), ("Raiders", "raiders")):
         if sec[key]:
             parts.append(f"{title}\n\n{sec[key]}")
@@ -435,6 +450,22 @@ def _report(db, sids: list[str], headline: str, top: int) -> str:
     body = [l for p in parts[1:] for l in p.split("\n")]
     rule = "\u2500" * min(60, max([32] + [len(l) for l in body]))
     return f"\n{rule}\n".join(parts)
+
+
+def _wrap(names: list[str], limit: int = 900) -> str:
+    """Names as one comma-separated run, truncated with a count of the rest.
+
+    A follow list can run to dozens of names and an embed field caps at 1024
+    characters, so it degrades to "+N more" rather than being cut mid-name.
+    """
+    out = []
+    used = 0
+    for i, n in enumerate(names):
+        if used + len(n) + 2 > limit:
+            return ", ".join(out) + f" +{len(names) - i} more"
+        out.append(n)
+        used += len(n) + 2
+    return ", ".join(out)
 
 
 def _fence(table: str) -> str:
@@ -446,8 +477,12 @@ def report_embeds(db, sids: list[str], headline: str, top: int = 10) -> list[dic
     two presence lists, then who talked."""
     sec = _sections(db, sids, headline, top)
     first = {"title": sec["headline"][:256], "description": "\n".join(sec["stats"])[:4096]}
-    if sec["raiders"]:
-        first["fields"] = [{"name": "Raiders", "value": _fence(sec["raiders"])[:1024]}]
+    first["fields"] = [f for f in (
+        {"name": "Cheered", "value": sec["cheered"][:1024]} if sec["cheered"] else None,
+        {"name": "Followed", "value": sec["followed"][:1024]} if sec["followed"] else None,
+        {"name": "Subscribed", "value": sec["subscribed"][:1024]} if sec["subscribed"] else None,
+        {"name": "Raiders", "value": _fence(sec["raiders"])[:1024]} if sec["raiders"] else None,
+    ) if f]
     second = {"fields": [f for f in (
         {"name": f"Top lurkers ({int(LURKER_STAY * 100)}%+)",
          "value": _fence(sec["lurkers"])[:1024]} if sec["lurkers"] else None,

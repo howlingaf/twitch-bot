@@ -38,6 +38,7 @@ from .twitch_api import (
     get_stream_started_at,
     get_user_id,
     get_chatters,
+    get_new_followers,
 )
 from .chatstore import ChatStore, parse_emotes
 from . import viewerstats
@@ -475,10 +476,32 @@ class Bot(commands.Bot):
             await asyncio.sleep(delay)
         logger.warning("No VOD matching %s appeared in ~16 min; alert left as-is.", started_at)
 
+    async def _record_follows(self):
+        """Store everyone who followed during the stream as a `follow` event.
+
+        Follows don't come over chat, so unlike every other support event this
+        is a poll: one Helix call at stream end, written to the same table so
+        the report reads them the same way and stays reproducible afterwards.
+        """
+        if not self.stream_started_at:
+            return
+        rows = await get_new_followers(self.stream_started_at)
+        if rows is None:
+            logger.warning("Follower lookup failed; report will show no follows")
+            return
+        for user_id, login, followed_at in rows:
+            if self.store.has_event(self.stream_id, "follow", login):
+                continue
+            self.store.add_event(ts=int(_parse_iso(followed_at).timestamp()),
+                                 stream_id=self.stream_id, kind="follow",
+                                 user_id=user_id, login=login)
+        logger.info("Recorded %d follow(s) for stream %s", len(rows), self.stream_id)
+
     async def _post_stream_report(self):
         """The stream's chat numbers and the regulars ranking, into
         #twitch-bot-console. Best effort — a failure is a log line."""
         try:
+            await self._record_follows()
             embeds = viewerstats.stream_report_embeds(self.store.db, self.stream_id)
             ok = await notify_stream_report(embeds)
             if not ok:      # embeds failed; the numbers still matter more than the format

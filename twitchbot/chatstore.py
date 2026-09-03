@@ -13,7 +13,8 @@ Four tables, all keyed by stream:
             the closest thing to watch time Twitch exposes (logged-in
             viewers with chat open; lurkers on the embed don't show)
   events    subs, resubs, gifts, bits, raids — the "support" signals that
-            arrive as USERNOTICE / bits tags rather than as chat text
+            arrive as USERNOTICE / bits tags rather than as chat text, plus
+            follows, which arrive nowhere and are polled at stream end
 
 SQLite via the stdlib, WAL mode, one autocommit connection. Writes are
 single-row inserts on the chat path and one transaction per presence poll,
@@ -67,7 +68,7 @@ CREATE TABLE IF NOT EXISTS events (
     id          INTEGER PRIMARY KEY,
     ts          INTEGER NOT NULL,
     stream_id   TEXT NOT NULL,
-    kind        TEXT NOT NULL,      -- sub | resub | subgift | submysterygift | bits | raid
+    kind        TEXT NOT NULL,      -- sub | resub | subgift | submysterygift | bits | raid | follow
     user_id     TEXT,
     login       TEXT NOT NULL,
     amount      INTEGER NOT NULL DEFAULT 0,  -- months / gifts / bits / raid viewers
@@ -156,6 +157,16 @@ class ChatStore:
             "VALUES (?,?,?,?,?,?,?,?)",
             (ts, stream_id, kind, user_id, login.lower(), int(amount or 0), tier, detail),
         )
+
+    def has_event(self, stream_id: str, kind: str, login: str) -> bool:
+        """Whether this person already has an event of this kind on this stream.
+
+        Follows are polled rather than pushed, so the same follow can be seen
+        twice (a retry, a re-run); the events table has no natural key to lean on.
+        """
+        return bool(self.db.execute(
+            "SELECT 1 FROM events WHERE stream_id=? AND kind=? AND login=? LIMIT 1",
+            (stream_id, kind, login.lower())).fetchone())
 
     def close(self) -> None:
         self.db.close()
