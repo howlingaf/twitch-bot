@@ -339,7 +339,7 @@ def user(db, *, name="", since=0, top=25, **_) -> str:
     return "\n\n".join(parts)
 
 
-def _sections(db, sids: list[str], headline: str, top: int) -> dict:
+def _sections(db, sids: list[str], headline: str, top: int, subline: str = "") -> dict:
     """The report's parts, before they're rendered as text or as embeds.
 
     Everything before the window's earliest stream is the history that
@@ -375,11 +375,16 @@ def _sections(db, sids: list[str], headline: str, top: int) -> dict:
     returning = sum(1 for l in here if attended[l])
     regular = sum(1 for l in here if attended[l] * 2 > len(prior))
 
+    # Follows live in this table for want of a better one, but they aren't
+    # support and carry no amount — they'd read as "follow x11 (0)".
     events = db.execute(
         f"SELECT kind, COUNT(*), SUM(amount) FROM events WHERE stream_id IN ({marks}) "
-        f"GROUP BY kind", tuple(sids)).fetchall()
+        f"AND kind != 'follow' GROUP BY kind", tuple(sids)).fetchall()
 
-    stats = [f"{mins // 60}h{mins % 60:02d}m · {present} in chat · {chatters} chatted · "
+    # The category leads the description rather than riding on the title, which
+    # is one line however long the stream name gets.
+    stats = ([subline] if subline else []) + [
+             f"{mins // 60}h{mins % 60:02d}m · {present} in chat · {chatters} chatted · "
              f"{msgs} messages",
              f"{newbies} first-timers" + (f" · {returning} returning" if prior else "")]
     if prior and present:
@@ -435,9 +440,9 @@ def _sections(db, sids: list[str], headline: str, top: int) -> dict:
     }
 
 
-def _report(db, sids: list[str], headline: str, top: int) -> str:
+def _report(db, sids: list[str], headline: str, top: int, subline: str = "") -> str:
     """The plain-text form, for the console command."""
-    sec = _sections(db, sids, headline, top)
+    sec = _sections(db, sids, headline, top, subline)
     parts = ["\n".join([sec["headline"], *sec["stats"]])]
     for title, key in (("Cheered", "cheered"), ("Followed", "followed"),
                        ("Subscribed", "subscribed"),
@@ -472,10 +477,11 @@ def _fence(table: str) -> str:
     return f"```\n{table}\n```"
 
 
-def report_embeds(db, sids: list[str], headline: str, top: int = 10) -> list[dict]:
+def report_embeds(db, sids: list[str], headline: str, top: int = 10,
+                  subline: str = "") -> list[dict]:
     """The same report as Discord embeds: the numbers and who raided, then the
     two presence lists, then who talked."""
-    sec = _sections(db, sids, headline, top)
+    sec = _sections(db, sids, headline, top, subline)
     first = {"title": sec["headline"][:256], "description": "\n".join(sec["stats"])[:4096]}
     first["fields"] = [f for f in (
         {"name": "Cheered", "value": sec["cheered"][:1024]} if sec["cheered"] else None,
@@ -495,9 +501,8 @@ def report_embeds(db, sids: list[str], headline: str, top: int = 10) -> list[dic
 def stream_report_embeds(db, stream_id: str, top: int = 10) -> list[dict]:
     row = db.execute("SELECT title, game FROM streams WHERE id = ?", (stream_id,)).fetchone()
     title, game = row if row else ("untitled", "")
-    return report_embeds(db, [stream_id],
-                         f"Stream report — {title or 'untitled'}" + (f" [{game}]" if game else ""),
-                         top)
+    return report_embeds(db, [stream_id], f"Stream report — {title or 'untitled'}",
+                         top, game or "")
 
 
 def stream_report(db, stream_id: str, top: int = 10) -> str:
@@ -506,9 +511,7 @@ def stream_report(db, stream_id: str, top: int = 10) -> str:
     if not row:
         return f"(no record of stream {stream_id})"
     title, game = row
-    return _report(db, [stream_id],
-                   f"Stream report — {title or 'untitled'}" + (f" [{game}]" if game else ""),
-                   top)
+    return _report(db, [stream_id], f"Stream report — {title or 'untitled'}", top, game or "")
 
 
 def recent(db, *, since=0, top=10, last=3, **_) -> str:
