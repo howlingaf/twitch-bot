@@ -262,6 +262,32 @@ async def get_new_followers(since_iso: str) -> list[tuple[str, str, str]] | None
     return out
 
 
+async def get_subscribers() -> list[dict] | None:
+    """Everyone subscribed right now. Needs channel:read:subscriptions.
+
+    None means the lookup failed, which must not be read as "nobody subscribes"
+    — the caller diffs this against the last snapshot, and an empty list would
+    look like every subscriber leaving at once.
+    """
+    out, cursor = [], ""
+    for _ in range(50):
+        url = (f"https://api.twitch.tv/helix/subscriptions?broadcaster_id={BROADCASTER_ID}&first=100"
+               + (f"&after={cursor}" if cursor else ""))
+        status, body = await _twitch_request("GET", url)
+        if status != 200:
+            logger.error("Get Subscriptions failed. HTTP %s: %s", status, body)
+            return None
+        data = json.loads(body)
+        if "data" not in data:
+            logger.error("Get Subscriptions returned no data: %s", body[:200])
+            return None
+        out += data["data"]
+        cursor = data.get("pagination", {}).get("cursor", "")
+        if not cursor:
+            return out
+    return out
+
+
 async def get_category_rank(game_id: str, user_login: str) -> tuple[int, int, int] | None:
     """Where user_login sits in its category right now: (viewers, rank, of).
 

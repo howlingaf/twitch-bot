@@ -262,6 +262,36 @@ def raiders(db, *, since=0, top=25, sids=None, **_) -> str:
         ("viewer", "raids", "viewers"))
 
 
+TIER_NAME = {"1000": "T1", "2000": "T2", "3000": "T3"}
+
+
+def subs(db, *, subscribers=None, top=25, **_) -> str:
+    """Who subscribes right now — live from Helix, not from the chat log.
+
+    Chat only ever shows subs who talk: a badge needs a message, an unshared
+    resub sends no notice, and a gift to a lurker may never be mentioned. The
+    caller fetches the list (this stays sync like every other report); None
+    means the lookup failed, which is not the same as nobody subscribing.
+    """
+    if subscribers is None:
+        return ("(couldn't read the subscriber list — the broadcaster token needs "
+                "channel:read:subscriptions)")
+    rows = [r for r in subscribers if r["user_login"].lower() not in REPORT_IGNORE]
+    if not rows:
+        return "No subscribers."
+    # Last chat line each, so the silent ones are visible as silent.
+    out = []
+    for r in sorted(rows, key=lambda r: (r["tier"], r["user_login"]), reverse=True):
+        l = r["user_login"].lower()
+        seen = db.execute("SELECT MAX(ts) FROM messages WHERE login=?", (l,)).fetchone()[0]
+        out.append((l, TIER_NAME.get(r["tier"], r["tier"]),
+                    r.get("gifter_login") or ("anonymous" if r.get("is_gift") else ""),
+                    _day(seen) if seen else "never"))
+    points = sum({"1000": 1, "2000": 2, "3000": 6}.get(r["tier"], 1) for r in rows)
+    return (f"{len(rows)} subscriber(s), {points} sub point(s)\n\n"
+            + _table(out[:top], ("viewer", "tier", "gifted by", "last chat")))
+
+
 def viewers(db, *, since=0, top=25, **_) -> str:
     """The raw leaderboard: same facts as `regulars`, no score, sorted by
     attendance then hours then messages."""
@@ -537,7 +567,7 @@ def recent(db, *, since=0, top=10, last=3, **_) -> str:
                    f"Stream report — last {len(sel)} streams ({span})", top)
 
 
-REPORTS = {"regulars": regulars, "raiders": raiders, "recent": recent, "viewers": viewers, "emotes": emotes,
+REPORTS = {"regulars": regulars, "raiders": raiders, "recent": recent, "subs": subs, "viewers": viewers, "emotes": emotes,
            "streams": streams, "user": user}
 
 

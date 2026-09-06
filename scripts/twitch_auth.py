@@ -48,7 +48,11 @@ ACCOUNTS = {
                   "moderator:manage:shoutouts channel:bot "
                   "channel:manage:vips moderator:read:followers "
                   # Get Chatters, polled while live for per-viewer presence.
-                  "moderator:read:chatters",
+                  "moderator:read:chatters "
+                  # Get Broadcaster Subscriptions: the full subscriber list,
+                  # including the ones who never speak. Chat badges only ever
+                  # show subs who talk.
+                  "channel:read:subscriptions",
         "filename": ".twitch_tokens.json",
     },
     "bot": {

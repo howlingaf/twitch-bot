@@ -23,6 +23,7 @@ from aiohttp import web
 from . import viewerstats
 from .config import BROADCASTER_ID, CONSOLE_SECRET, DISCORD_BOT_URL, RECAP_SECRET
 from .logger import logger
+from .twitch_api import get_subscribers
 
 _START_TIME = time.time()
 
@@ -73,16 +74,20 @@ async def _cmd_test(bot, args):
 
 
 async def _cmd_viewers(bot, args):
-    """viewers [regulars|viewers|emotes|streams|user NAME] [--since YYYY-MM-DD] [--top N]"""
+    """viewers [regulars|subs|raiders|recent|viewers|emotes|streams|user NAME] [--since YYYY-MM-DD] [--top N]"""
     parser = viewerstats.arg_parser(top=15)   # 15 rows fits one Discord message
     try:
         a = parser.parse_args(shlex.split(args or ""))
     except (argparse.ArgumentError, ValueError) as e:
         return False, f"{e}. usage: {_cmd_viewers.__doc__}"
+    # Reports are sync and db-only; anything needing the network is fetched here
+    # and handed in, the way the emote set already was.
     seventv = await viewerstats.fetch_seventv(BROADCASTER_ID) if a.report == "emotes" else set()
+    subscribers = await get_subscribers() if a.report == "subs" else None
     try:
         return True, viewerstats.REPORTS[a.report](
-            bot.store.db, since=a.since, top=a.top, name=a.name, seventv=seventv)
+            bot.store.db, since=a.since, top=a.top, name=a.name, seventv=seventv,
+            subscribers=subscribers)
     except ValueError as e:
         return False, str(e)
 
