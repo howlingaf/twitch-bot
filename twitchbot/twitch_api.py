@@ -75,11 +75,13 @@ async def _twitch_request(method: str, url: str, **kwargs):
     return None, ""
 
 
-async def fetch_stream_metadata() -> dict | None:
-    """Log the current stream's Helix metadata and return it (None if offline).
+async def fetch_stream_metadata(verbose: bool = True) -> dict | None:
+    """The current stream's Helix metadata (None if offline).
 
     Returns what it logs so a caller can read a field — the stream title, for
-    the recap heading — without a second identical request.
+    the recap heading — without a second identical request. verbose=False for
+    callers on a loop: the full dump is worth one line at go-live, not one a
+    minute for twelve hours.
     """
     url = f"https://api.twitch.tv/helix/streams?user_id={BROADCASTER_ID}"
     status, body = await _twitch_request("GET", url)
@@ -87,7 +89,8 @@ async def fetch_stream_metadata() -> dict | None:
         logger.error("Stream metadata fetch failed: HTTP %s", status)
         return None
     data = json.loads(body)
-    logger.info("STREAM METADATA:\n%s", json.dumps(data, indent=2))
+    if verbose:
+        logger.info("STREAM METADATA:\n%s", json.dumps(data, indent=2))
     entries = data.get("data", [])
     return entries[0] if entries else None
 
@@ -257,6 +260,35 @@ async def get_new_followers(since_iso: str) -> list[tuple[str, str, str]] | None
         if not cursor:
             return out
     return out
+
+
+async def get_category_rank(game_id: str, user_login: str) -> tuple[int, int, int] | None:
+    """Where user_login sits in its category right now: (viewers, rank, of).
+
+    Helix returns a category's streams viewer-descending, so rank is position
+    in that list. It pages 100 at a time and the tail is enormous, so this
+    stops once past the streamer — `of` is therefore "at least this many",
+    which is all the rank needs. None if the lookup fails or they're offline.
+    """
+    seen = 0
+    cursor = ""
+    for _ in range(10):             # 1000 streams deep is far past any rank worth naming
+        url = (f"https://api.twitch.tv/helix/streams?game_id={game_id}&first=100"
+               + (f"&after={cursor}" if cursor else ""))
+        status, body = await _twitch_request("GET", url)
+        if status != 200:
+            logger.error("Category rank lookup failed. HTTP %s: %s", status, body)
+            return None
+        data = json.loads(body)
+        entries = data.get("data", [])
+        for i, st in enumerate(entries, 1):
+            if st["user_login"].lower() == user_login.lower():
+                return st["viewer_count"], seen + i, seen + len(entries)
+        seen += len(entries)
+        cursor = data.get("pagination", {}).get("cursor", "")
+        if not cursor or not entries:
+            return None
+    return None
 
 
 async def get_chatters() -> list[tuple[str, str]] | None:

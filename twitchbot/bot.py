@@ -39,6 +39,7 @@ from .twitch_api import (
     get_user_id,
     get_chatters,
     get_new_followers,
+    get_category_rank,
 )
 from .chatstore import ChatStore, parse_emotes
 from . import viewerstats
@@ -301,10 +302,32 @@ class Bot(commands.Bot):
                 else:
                     misses = 0
                     self.store.add_presence(self.stream_id, chatters)
+                await self._sample_viewers()
                 await asyncio.sleep(self.PRESENCE_POLL_INTERVAL)
         except asyncio.CancelledError:
             logger.info("Viewer presence monitor cancelled.")
             raise
+
+    async def _sample_viewers(self):
+        """Concurrent viewers and category rank, once a minute while live.
+
+        Rides the presence loop rather than running its own: they want the
+        same cadence, and Twitch keeps no history of either number, so a
+        minute not sampled is a minute that can never be recovered.
+        """
+        try:
+            meta = await fetch_stream_metadata(verbose=False)
+            if not meta:
+                return
+            rank = of = None
+            if meta.get("game_id"):
+                got = await get_category_rank(meta["game_id"], BROADCASTER)
+                if got:
+                    _, rank, of = got
+            self.store.add_viewers(self.stream_id, int(meta.get("viewer_count") or 0),
+                                   rank, of)
+        except Exception:
+            logger.exception("Viewer/rank sample failed")
 
     # ---------------- SPOTIFY NOW-PLAYING MONITOR ----------------
     # Poll cadence while healthy. After a failure the delay doubles from

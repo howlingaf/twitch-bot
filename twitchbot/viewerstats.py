@@ -383,7 +383,20 @@ def _sections(db, sids: list[str], headline: str, top: int, subline: str = "") -
 
     # The category leads the description rather than riding on the title, which
     # is one line however long the stream name gets.
-    stats = ([subline] if subline else []) + [
+    # Viewer count and rank are sampled a minute at a time while live (see
+    # chatstore.viewers); a stream from before that existed simply has none.
+    peak = db.execute(
+        f"SELECT MAX(viewers), MIN(rank), MAX(of) FROM viewers WHERE stream_id IN ({marks})",
+        tuple(sids)).fetchone()
+    avg = db.execute(
+        f"SELECT AVG(viewers) FROM viewers WHERE stream_id IN ({marks})", tuple(sids)).fetchone()[0]
+    peak_line = ""
+    if peak and peak[0] is not None:
+        peak_line = f"peak {peak[0]} viewers · avg {avg:.0f}"
+        if peak[1]:
+            peak_line += f" · best #{peak[1]} of {peak[2]} in category"
+
+    stats = ([subline] if subline else []) + ([peak_line] if peak_line else []) + [
              f"{mins // 60}h{mins % 60:02d}m · {present} in chat · {chatters} chatted · "
              f"{msgs} messages",
              f"{newbies} first-timers" + (f" · {returning} returning" if prior else "")]

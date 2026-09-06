@@ -12,6 +12,8 @@ Four tables, all keyed by stream:
   presence  one row per (minute, user) from polling Get Chatters while live —
             the closest thing to watch time Twitch exposes (logged-in
             viewers with chat open; lurkers on the embed don't show)
+  viewers   one row per minute: concurrent viewer count and category rank,
+            neither of which Twitch keeps any history of
   events    subs, resubs, gifts, bits, raids — the "support" signals that
             arrive as USERNOTICE / bits tags rather than as chat text, plus
             follows, which arrive nowhere and are polled at stream end
@@ -76,6 +78,16 @@ CREATE TABLE IF NOT EXISTS events (
     detail      TEXT                -- recipient login for a gift, resub message, ...
 );
 CREATE INDEX IF NOT EXISTS events_login ON events (login);
+
+CREATE TABLE IF NOT EXISTS viewers (
+    minute      INTEGER NOT NULL,   -- unix seconds, floored to the minute
+    stream_id   TEXT NOT NULL,
+    viewers     INTEGER NOT NULL,   -- Helix concurrent viewer count
+    rank        INTEGER,            -- position in the category, 1 = top
+    of          INTEGER,            -- streams counted at least that far down
+    PRIMARY KEY (minute, stream_id)
+);
+CREATE INDEX IF NOT EXISTS viewers_stream ON viewers (stream_id);
 """
 
 
@@ -147,6 +159,19 @@ class ChatStore:
             [(minute, stream_id, uid, login.lower()) for uid, login in chatters],
         )
         self.db.execute("COMMIT")
+
+    # -------- viewers --------
+    def add_viewers(self, stream_id: str, viewers: int,
+                    rank: int | None, of: int | None) -> None:
+        """One row a minute: concurrent viewers and where that placed.
+
+        Twitch keeps no history of either, so a rank not sampled while live is
+        gone — this is the only record there will be.
+        """
+        minute = int(time.time()) // 60 * 60
+        self.db.execute(
+            "INSERT OR IGNORE INTO viewers (minute, stream_id, viewers, rank, of) "
+            "VALUES (?,?,?,?,?)", (minute, stream_id, viewers, rank, of))
 
     # -------- events --------
     def add_event(self, *, ts: int, stream_id: str, kind: str, user_id: str | None,
