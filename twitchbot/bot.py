@@ -39,7 +39,7 @@ from .twitch_api import (
     get_user_id,
     get_chatters,
     get_new_followers,
-    get_category_rank,
+    get_category_snapshot,
 )
 from .chatstore import ChatStore, parse_emotes
 from . import viewerstats
@@ -319,13 +319,13 @@ class Bot(commands.Bot):
             meta = await fetch_stream_metadata(verbose=False)
             if not meta:
                 return
-            rank = of = None
+            snap = None
             if meta.get("game_id"):
-                got = await get_category_rank(meta["game_id"], BROADCASTER)
-                if got:
-                    _, rank, of = got
-            self.store.add_viewers(self.stream_id, int(meta.get("viewer_count") or 0),
-                                   rank, of)
+                snap = await get_category_snapshot(meta["game_id"], BROADCASTER)
+            self.store.add_viewers(
+                self.stream_id, int(meta.get("viewer_count") or 0),
+                (snap or {}).get("rank"), (snap or {}).get("of"),
+                (snap or {}).get("leaders"))
         except Exception:
             logger.exception("Viewer/rank sample failed")
 

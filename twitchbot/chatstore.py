@@ -85,6 +85,7 @@ CREATE TABLE IF NOT EXISTS viewers (
     viewers     INTEGER NOT NULL,   -- Helix concurrent viewer count
     rank        INTEGER,            -- position in the category, 1 = top
     of          INTEGER,            -- streams counted at least that far down
+    leaders     TEXT,               -- JSON [[login, viewers], ...] top of the category
     PRIMARY KEY (minute, stream_id)
 );
 CREATE INDEX IF NOT EXISTS viewers_stream ON viewers (stream_id);
@@ -118,6 +119,10 @@ class ChatStore:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=NORMAL")
         self.db.executescript(_SCHEMA)
+        # Added after the table shipped; CREATE TABLE IF NOT EXISTS won't add it.
+        if "leaders" not in {r[1] for r in self.db.execute("PRAGMA table_info(viewers)")}:
+            self.db.execute("ALTER TABLE viewers ADD COLUMN leaders TEXT")
+            logger.info("Chat store: added viewers.leaders")
         logger.info("Chat store open at %s", self.path)
 
     # -------- streams --------
@@ -161,17 +166,19 @@ class ChatStore:
         self.db.execute("COMMIT")
 
     # -------- viewers --------
-    def add_viewers(self, stream_id: str, viewers: int,
-                    rank: int | None, of: int | None) -> None:
-        """One row a minute: concurrent viewers and where that placed.
+    def add_viewers(self, stream_id: str, viewers: int, rank: int | None,
+                    of: int | None, leaders: list | None = None) -> None:
+        """One row a minute: concurrent viewers, where that placed, and who led.
 
-        Twitch keeps no history of either, so a rank not sampled while live is
-        gone — this is the only record there will be.
+        Twitch keeps no history of any of it, so a minute not sampled while live
+        is gone — this is the only record there will be.
         """
         minute = int(time.time()) // 60 * 60
         self.db.execute(
-            "INSERT OR IGNORE INTO viewers (minute, stream_id, viewers, rank, of) "
-            "VALUES (?,?,?,?,?)", (minute, stream_id, viewers, rank, of))
+            "INSERT OR IGNORE INTO viewers (minute, stream_id, viewers, rank, of, leaders) "
+            "VALUES (?,?,?,?,?,?)",
+            (minute, stream_id, viewers, rank, of,
+             json.dumps(leaders) if leaders else None))
 
     # -------- events --------
     def add_event(self, *, ts: int, stream_id: str, kind: str, user_id: str | None,

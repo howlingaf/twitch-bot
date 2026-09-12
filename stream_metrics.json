@@ -1,0 +1,1035 @@
+{
+ "generated_at": "2026-09-07T12:20:33.425069+00:00",
+ "channel": "howlingaf",
+ "category": "Software and Game Development",
+ "notes": {
+  "present": "distinct people seen in chat (Get Chatters poll, 1/min). Heavily inflated by raids.",
+  "chatters": "distinct people who sent >=1 message",
+  "concurrent_chatters": "people in chat in a single minute; floor for concurrent viewers",
+  "viewers/rank": "Helix concurrent viewers + category rank, sampled 1/min. Only exists from 2026-09-06.",
+  "returning": "present here AND present on an earlier recorded stream",
+  "regular": "present here AND on more than half of earlier recorded streams",
+  "first_timers": "Twitch's own first-ever-chatter flag; counts chatters only, channel lifetime"
+ },
+ "streams": [
+  {
+   "id": "321093958617",
+   "title": "starting K&R, crafting interpreters, synacore later",
+   "game": "Software and Game Development",
+   "start_utc": "2026-08-28T21:46:31+00:00",
+   "end_utc": "2026-08-29T09:41:54+00:00",
+   "start_local_cdt": "2026-08-28T16:46:31-05:00",
+   "end_local_cdt": "2026-08-29T04:41:54-05:00",
+   "weekday": "Friday",
+   "duration_min": 715,
+   "present": 230,
+   "chatters": 51,
+   "messages": 979,
+   "first_timers": 13,
+   "returning": 0,
+   "returning_pct": 0.0,
+   "regular": 0,
+   "regular_pct": 0.0,
+   "concurrent_chatters_peak": 61,
+   "concurrent_chatters_avg": 25.5,
+   "viewers_samples": 0,
+   "viewers_peak": null,
+   "viewers_avg": null,
+   "best_rank": null,
+   "category_streams_live": null,
+   "follows": 11,
+   "raids": 2,
+   "raid_viewers": 44,
+   "bits_events": 1,
+   "bits_total": 100,
+   "subs_events": 0,
+   "raiders": [
+    {
+     "login": "meganemidori",
+     "viewers": 39
+    },
+    {
+     "login": "ghiblimagic",
+     "viewers": 5
+    }
+   ],
+   "followers": [
+    "wapaccesstv",
+    "fillet_of_me",
+    "twentyfour_tv",
+    "carrybit31",
+    "d_fenz",
+    "hedgethorn",
+    "rcrnstn",
+    "axokasha",
+    "skateordie87",
+    "barongearmu",
+    "lcolonq"
+   ],
+   "top_chatters": [
+    {
+     "login": "leetwhale",
+     "msgs": 137
+    },
+    {
+     "login": "badcop_",
+     "msgs": 122
+    },
+    {
+     "login": "spiritoffreyja",
+     "msgs": 116
+    },
+    {
+     "login": "raspredval1337",
+     "msgs": 92
+    },
+    {
+     "login": "icy_black_deep",
+     "msgs": 64
+    },
+    {
+     "login": "rcrnstn",
+     "msgs": 54
+    },
+    {
+     "login": "sparklydarkmatter73",
+     "msgs": 53
+    },
+    {
+     "login": "barongearmu",
+     "msgs": 50
+    },
+    {
+     "login": "meganemidori",
+     "msgs": 30
+    },
+    {
+     "login": "owhska",
+     "msgs": 23
+    }
+   ],
+   "top_stay": [
+    {
+     "login": "sputnikplop",
+     "minutes": 712,
+     "stay_pct": 100
+    },
+    {
+     "login": "sparklydarkmatter73",
+     "minutes": 672,
+     "stay_pct": 94
+    },
+    {
+     "login": "penguin_operat0r",
+     "minutes": 669,
+     "stay_pct": 94
+    },
+    {
+     "login": "badcop_",
+     "minutes": 597,
+     "stay_pct": 83
+    },
+    {
+     "login": "michaelpcgamer",
+     "minutes": 538,
+     "stay_pct": 75
+    },
+    {
+     "login": "vesdev",
+     "minutes": 494,
+     "stay_pct": 69
+    },
+    {
+     "login": "i_stanleigh",
+     "minutes": 444,
+     "stay_pct": 62
+    },
+    {
+     "login": "brentarata",
+     "minutes": 442,
+     "stay_pct": 62
+    },
+    {
+     "login": "rcrnstn",
+     "minutes": 415,
+     "stay_pct": 58
+    },
+    {
+     "login": "rumbletumjum",
+     "minutes": 408,
+     "stay_pct": 57
+    }
+   ]
+  },
+  {
+   "id": "321109989593",
+   "title": "its totally normal to confuse dennis ritchie with denise richards ok more k&r, crafting interpreters",
+   "game": "Software and Game Development",
+   "start_utc": "2026-08-29T19:14:21+00:00",
+   "end_utc": "2026-08-30T08:10:13+00:00",
+   "start_local_cdt": "2026-08-29T14:14:21-05:00",
+   "end_local_cdt": "2026-08-30T03:10:13-05:00",
+   "weekday": "Saturday",
+   "duration_min": 775,
+   "present": 244,
+   "chatters": 61,
+   "messages": 2217,
+   "first_timers": 9,
+   "returning": 74,
+   "returning_pct": 30.3,
+   "regular": 74,
+   "regular_pct": 30.3,
+   "concurrent_chatters_peak": 50,
+   "concurrent_chatters_avg": 29.1,
+   "viewers_samples": 0,
+   "viewers_peak": null,
+   "viewers_avg": null,
+   "best_rank": null,
+   "category_streams_live": null,
+   "follows": 6,
+   "raids": 2,
+   "raid_viewers": 43,
+   "bits_events": 0,
+   "bits_total": 0,
+   "subs_events": 0,
+   "raiders": [
+    {
+     "login": "midnight_simon",
+     "viewers": 36
+    },
+    {
+     "login": "iamsamirhere",
+     "viewers": 7
+    }
+   ],
+   "followers": [
+    "rhoninthewise",
+    "keepingtrckofthisacct",
+    "ddakx",
+    "dandymcgee",
+    "hardrich22",
+    "bl4ck_goku_"
+   ],
+   "top_chatters": [
+    {
+     "login": "spiritoffreyja",
+     "msgs": 396
+    },
+    {
+     "login": "elcatto67",
+     "msgs": 245
+    },
+    {
+     "login": "dandymcgee",
+     "msgs": 227
+    },
+    {
+     "login": "holaholawedemboys",
+     "msgs": 193
+    },
+    {
+     "login": "raspredval1337",
+     "msgs": 142
+    },
+    {
+     "login": "rcrnstn",
+     "msgs": 120
+    },
+    {
+     "login": "naym1r",
+     "msgs": 101
+    },
+    {
+     "login": "subaru_baja",
+     "msgs": 65
+    },
+    {
+     "login": "konosubalife",
+     "msgs": 63
+    },
+    {
+     "login": "hittaus",
+     "msgs": 52
+    }
+   ],
+   "top_stay": [
+    {
+     "login": "unstabledeus",
+     "minutes": 774,
+     "stay_pct": 100
+    },
+    {
+     "login": "sputnikplop",
+     "minutes": 772,
+     "stay_pct": 100
+    },
+    {
+     "login": "penguin_operat0r",
+     "minutes": 770,
+     "stay_pct": 99
+    },
+    {
+     "login": "vesdev",
+     "minutes": 762,
+     "stay_pct": 98
+    },
+    {
+     "login": "endggame_",
+     "minutes": 746,
+     "stay_pct": 96
+    },
+    {
+     "login": "morelshroomer",
+     "minutes": 716,
+     "stay_pct": 92
+    },
+    {
+     "login": "rcrnstn",
+     "minutes": 712,
+     "stay_pct": 92
+    },
+    {
+     "login": "onearmarmy94",
+     "minutes": 706,
+     "stay_pct": 91
+    },
+    {
+     "login": "sparklydarkmatter73",
+     "minutes": 667,
+     "stay_pct": 86
+    },
+    {
+     "login": "subaru_baja",
+     "minutes": 609,
+     "stay_pct": 79
+    }
+   ]
+  },
+  {
+   "id": "321302560603",
+   "title": "holy more k&r, crafting interpreters later",
+   "game": "Software and Game Development",
+   "start_utc": "2026-08-30T21:40:47+00:00",
+   "end_utc": "2026-08-31T10:02:30+00:00",
+   "start_local_cdt": "2026-08-30T16:40:47-05:00",
+   "end_local_cdt": "2026-08-31T05:02:30-05:00",
+   "weekday": "Sunday",
+   "duration_min": 741,
+   "present": 225,
+   "chatters": 53,
+   "messages": 1458,
+   "first_timers": 10,
+   "returning": 99,
+   "returning_pct": 44.0,
+   "regular": 50,
+   "regular_pct": 22.2,
+   "concurrent_chatters_peak": 51,
+   "concurrent_chatters_avg": 30.3,
+   "viewers_samples": 0,
+   "viewers_peak": null,
+   "viewers_avg": null,
+   "best_rank": null,
+   "category_streams_live": null,
+   "follows": 11,
+   "raids": 4,
+   "raid_viewers": 57,
+   "bits_events": 1,
+   "bits_total": 1,
+   "subs_events": 0,
+   "raiders": [
+    {
+     "login": "kuviman",
+     "viewers": 24
+    },
+    {
+     "login": "theshyhat",
+     "viewers": 15
+    },
+    {
+     "login": "iamsamirhere",
+     "viewers": 9
+    },
+    {
+     "login": "skepticbeliever",
+     "viewers": 9
+    }
+   ],
+   "followers": [
+    "jabwan",
+    "hardloopweg",
+    "dydevx",
+    "m_at_hue",
+    "rafael_caixeta",
+    "sololetme2",
+    "basedpath",
+    "coko_dora",
+    "ef_a_49",
+    "skepticbeliever",
+    "axgallagher"
+   ],
+   "top_chatters": [
+    {
+     "login": "raspredval1337",
+     "msgs": 219
+    },
+    {
+     "login": "dandymcgee",
+     "msgs": 126
+    },
+    {
+     "login": "elcatto67",
+     "msgs": 125
+    },
+    {
+     "login": "rcrnstn",
+     "msgs": 105
+    },
+    {
+     "login": "unarmedguitar",
+     "msgs": 97
+    },
+    {
+     "login": "badcop_",
+     "msgs": 86
+    },
+    {
+     "login": "spiritoffreyja",
+     "msgs": 69
+    },
+    {
+     "login": "icy_black_deep",
+     "msgs": 60
+    },
+    {
+     "login": "m_at_hue",
+     "msgs": 48
+    },
+    {
+     "login": "skepticbeliever",
+     "msgs": 44
+    }
+   ],
+   "top_stay": [
+    {
+     "login": "sputnikplop",
+     "minutes": 738,
+     "stay_pct": 100
+    },
+    {
+     "login": "penguin_operat0r",
+     "minutes": 736,
+     "stay_pct": 99
+    },
+    {
+     "login": "rcrnstn",
+     "minutes": 729,
+     "stay_pct": 98
+    },
+    {
+     "login": "illestpreacha",
+     "minutes": 717,
+     "stay_pct": 97
+    },
+    {
+     "login": "butcherstorm",
+     "minutes": 681,
+     "stay_pct": 92
+    },
+    {
+     "login": "vesdev",
+     "minutes": 678,
+     "stay_pct": 91
+    },
+    {
+     "login": "metensis",
+     "minutes": 608,
+     "stay_pct": 82
+    },
+    {
+     "login": "htnkk33",
+     "minutes": 547,
+     "stay_pct": 74
+    },
+    {
+     "login": "unarmedguitar",
+     "minutes": 539,
+     "stay_pct": 73
+    },
+    {
+     "login": "subaru_baja",
+     "minutes": 531,
+     "stay_pct": 72
+    }
+   ]
+  },
+  {
+   "id": "321272672090",
+   "title": "3 day weekend omg even more k&r and crafting interpreters",
+   "game": "Software and Game Development",
+   "start_utc": "2026-09-04T22:48:05+00:00",
+   "end_utc": "2026-09-05T11:28:15+00:00",
+   "start_local_cdt": "2026-09-04T17:48:05-05:00",
+   "end_local_cdt": "2026-09-05T06:28:15-05:00",
+   "weekday": "Friday",
+   "duration_min": 760,
+   "present": 157,
+   "chatters": 58,
+   "messages": 1309,
+   "first_timers": 10,
+   "returning": 81,
+   "returning_pct": 51.6,
+   "regular": 57,
+   "regular_pct": 36.3,
+   "concurrent_chatters_peak": 36,
+   "concurrent_chatters_avg": 21.3,
+   "viewers_samples": 0,
+   "viewers_peak": null,
+   "viewers_avg": null,
+   "best_rank": null,
+   "category_streams_live": null,
+   "follows": 5,
+   "raids": 2,
+   "raid_viewers": 17,
+   "bits_events": 1,
+   "bits_total": 1,
+   "subs_events": 0,
+   "raiders": [
+    {
+     "login": "quantumapprentice",
+     "viewers": 9
+    },
+    {
+     "login": "iamsamirhere",
+     "viewers": 8
+    }
+   ],
+   "followers": [
+    "huskerd911",
+    "nedstarksneck",
+    "eskeminha",
+    "blood_scar96",
+    "ulipink"
+   ],
+   "top_chatters": [
+    {
+     "login": "themackabu",
+     "msgs": 213
+    },
+    {
+     "login": "spiritoffreyja",
+     "msgs": 136
+    },
+    {
+     "login": "ulipink",
+     "msgs": 108
+    },
+    {
+     "login": "elcatto67",
+     "msgs": 73
+    },
+    {
+     "login": "lazy_schemer",
+     "msgs": 68
+    },
+    {
+     "login": "icy_black_deep",
+     "msgs": 67
+    },
+    {
+     "login": "leetwhale",
+     "msgs": 62
+    },
+    {
+     "login": "barongearmu",
+     "msgs": 58
+    },
+    {
+     "login": "dandymcgee",
+     "msgs": 55
+    },
+    {
+     "login": "rcrnstn",
+     "msgs": 47
+    }
+   ],
+   "top_stay": [
+    {
+     "login": "sputnikplop",
+     "minutes": 757,
+     "stay_pct": 100
+    },
+    {
+     "login": "pimenta_jaum",
+     "minutes": 750,
+     "stay_pct": 99
+    },
+    {
+     "login": "penguin_operat0r",
+     "minutes": 741,
+     "stay_pct": 98
+    },
+    {
+     "login": "rcrnstn",
+     "minutes": 730,
+     "stay_pct": 96
+    },
+    {
+     "login": "subaru_baja",
+     "minutes": 490,
+     "stay_pct": 64
+    },
+    {
+     "login": "themackabu",
+     "minutes": 467,
+     "stay_pct": 61
+    },
+    {
+     "login": "basedpath",
+     "minutes": 423,
+     "stay_pct": 56
+    },
+    {
+     "login": "kintton",
+     "minutes": 386,
+     "stay_pct": 51
+    },
+    {
+     "login": "unstabledeus",
+     "minutes": 369,
+     "stay_pct": 49
+    },
+    {
+     "login": "maruder20",
+     "minutes": 358,
+     "stay_pct": 47
+    }
+   ]
+  },
+  {
+   "id": "321399736411",
+   "title": "k&r, interpreter in c yay",
+   "game": "Software and Game Development",
+   "start_utc": "2026-09-05T21:10:13+00:00",
+   "end_utc": "2026-09-06T10:48:28+00:00",
+   "start_local_cdt": "2026-09-05T16:10:13-05:00",
+   "end_local_cdt": "2026-09-06T05:48:28-05:00",
+   "weekday": "Saturday",
+   "duration_min": 818,
+   "present": 236,
+   "chatters": 57,
+   "messages": 1629,
+   "first_timers": 12,
+   "returning": 97,
+   "returning_pct": 41.1,
+   "regular": 45,
+   "regular_pct": 19.1,
+   "concurrent_chatters_peak": 33,
+   "concurrent_chatters_avg": 24.5,
+   "viewers_samples": 0,
+   "viewers_peak": null,
+   "viewers_avg": null,
+   "best_rank": null,
+   "category_streams_live": null,
+   "follows": 12,
+   "raids": 4,
+   "raid_viewers": 70,
+   "bits_events": 0,
+   "bits_total": 0,
+   "subs_events": 0,
+   "raiders": [
+    {
+     "login": "znurrish",
+     "viewers": 32
+    },
+    {
+     "login": "midnight_simon",
+     "viewers": 28
+    },
+    {
+     "login": "iamsamirhere",
+     "viewers": 6
+    },
+    {
+     "login": "iamsamirhere",
+     "viewers": 4
+    }
+   ],
+   "followers": [
+    "hest77",
+    "boulean",
+    "sourcakedev",
+    "erickfbcode",
+    "austinxduong",
+    "sheehizzled",
+    "hittaus",
+    "theycallmeunc",
+    "shakirovs",
+    "privateorange",
+    "atixwasfound",
+    "thegreatkratos"
+   ],
+   "top_chatters": [
+    {
+     "login": "spiritoffreyja",
+     "msgs": 256
+    },
+    {
+     "login": "themackabu",
+     "msgs": 172
+    },
+    {
+     "login": "elcatto67",
+     "msgs": 142
+    },
+    {
+     "login": "dandymcgee",
+     "msgs": 137
+    },
+    {
+     "login": "raspredval1337",
+     "msgs": 110
+    },
+    {
+     "login": "rcrnstn",
+     "msgs": 106
+    },
+    {
+     "login": "icy_black_deep",
+     "msgs": 59
+    },
+    {
+     "login": "atixwasfound",
+     "msgs": 49
+    },
+    {
+     "login": "0xcamus",
+     "msgs": 47
+    },
+    {
+     "login": "leetwhale",
+     "msgs": 47
+    }
+   ],
+   "top_stay": [
+    {
+     "login": "penguin_operat0r",
+     "minutes": 814,
+     "stay_pct": 100
+    },
+    {
+     "login": "sputnikplop",
+     "minutes": 814,
+     "stay_pct": 100
+    },
+    {
+     "login": "rcrnstn",
+     "minutes": 809,
+     "stay_pct": 99
+    },
+    {
+     "login": "midnight_simon",
+     "minutes": 513,
+     "stay_pct": 63
+    },
+    {
+     "login": "austinxduong",
+     "minutes": 500,
+     "stay_pct": 61
+    },
+    {
+     "login": "meatromni",
+     "minutes": 500,
+     "stay_pct": 61
+    },
+    {
+     "login": "themackabu",
+     "minutes": 485,
+     "stay_pct": 59
+    },
+    {
+     "login": "unstabledeus",
+     "minutes": 485,
+     "stay_pct": 59
+    },
+    {
+     "login": "frostvoxel",
+     "minutes": 474,
+     "stay_pct": 58
+    },
+    {
+     "login": "aristarxovich",
+     "minutes": 471,
+     "stay_pct": 58
+    }
+   ]
+  },
+  {
+   "id": "321417286491",
+   "title": "brian and dennis teach me pointers to craft an interpreter in c",
+   "game": "Software and Game Development",
+   "start_utc": "2026-09-06T21:04:41+00:00",
+   "end_utc": "2026-09-07T10:48:19+00:00",
+   "start_local_cdt": "2026-09-06T16:04:41-05:00",
+   "end_local_cdt": "2026-09-07T05:48:19-05:00",
+   "weekday": "Sunday",
+   "duration_min": 823,
+   "present": 259,
+   "chatters": 56,
+   "messages": 1086,
+   "first_timers": 11,
+   "returning": 118,
+   "returning_pct": 45.6,
+   "regular": 53,
+   "regular_pct": 20.5,
+   "concurrent_chatters_peak": 63,
+   "concurrent_chatters_avg": 29.8,
+   "viewers_samples": 819,
+   "viewers_peak": 58,
+   "viewers_avg": 25.7,
+   "best_rank": 1,
+   "category_streams_live": 146,
+   "follows": 9,
+   "raids": 2,
+   "raid_viewers": 57,
+   "bits_events": 0,
+   "bits_total": 0,
+   "subs_events": 0,
+   "raiders": [
+    {
+     "login": "theshyhat",
+     "viewers": 29
+    },
+    {
+     "login": "wizhatt",
+     "viewers": 28
+    }
+   ],
+   "followers": [
+    "mcklensy",
+    "yince87",
+    "josephferano",
+    "caponemaagico",
+    "scourgeb",
+    "likecookies",
+    "reddubed",
+    "geennoob",
+    "entrix_iii"
+   ],
+   "top_chatters": [
+    {
+     "login": "icy_black_deep",
+     "msgs": 117
+    },
+    {
+     "login": "joitch",
+     "msgs": 90
+    },
+    {
+     "login": "raspredval1337",
+     "msgs": 90
+    },
+    {
+     "login": "0xphoenixxo",
+     "msgs": 72
+    },
+    {
+     "login": "rcrnstn",
+     "msgs": 72
+    },
+    {
+     "login": "privateorange",
+     "msgs": 66
+    },
+    {
+     "login": "badcop_",
+     "msgs": 54
+    },
+    {
+     "login": "dandymcgee",
+     "msgs": 48
+    },
+    {
+     "login": "penguin_operat0r",
+     "msgs": 40
+    },
+    {
+     "login": "josephferano",
+     "msgs": 39
+    }
+   ],
+   "top_stay": [
+    {
+     "login": "penguin_operat0r",
+     "minutes": 815,
+     "stay_pct": 99
+    },
+    {
+     "login": "sputnikplop",
+     "minutes": 815,
+     "stay_pct": 99
+    },
+    {
+     "login": "rcrnstn",
+     "minutes": 681,
+     "stay_pct": 83
+    },
+    {
+     "login": "mathmaticalturtle",
+     "minutes": 672,
+     "stay_pct": 82
+    },
+    {
+     "login": "rumbletumjum",
+     "minutes": 597,
+     "stay_pct": 73
+    },
+    {
+     "login": "illestpreacha",
+     "minutes": 506,
+     "stay_pct": 61
+    },
+    {
+     "login": "badcop_",
+     "minutes": 460,
+     "stay_pct": 56
+    },
+    {
+     "login": "thebbz",
+     "minutes": 421,
+     "stay_pct": 51
+    },
+    {
+     "login": "themackabu",
+     "minutes": 421,
+     "stay_pct": 51
+    },
+    {
+     "login": "skepticbeliever",
+     "minutes": 420,
+     "stay_pct": 51
+    }
+   ]
+  }
+ ],
+ "audience": {
+  "distinct_people_ever": 882,
+  "seen_on_n_streams": {
+   "1": 882,
+   "2": 223,
+   "3": 113,
+   "4": 66,
+   "5": 42,
+   "6": 25
+  },
+  "next_stream_return_rate": [
+   {
+    "cohort": "2026-08-28",
+    "newcomers": 230,
+    "returned_next": 74
+   },
+   {
+    "cohort": "2026-08-29",
+    "newcomers": 170,
+    "returned_next": 25
+   },
+   {
+    "cohort": "2026-08-30",
+    "newcomers": 126,
+    "returned_next": 8
+   },
+   {
+    "cohort": "2026-09-04",
+    "newcomers": 76,
+    "returned_next": 7
+   },
+   {
+    "cohort": "2026-09-05",
+    "newcomers": 139,
+    "returned_next": 17
+   }
+  ],
+  "core_regulars_all_streams": [
+   "badcop_",
+   "elcatto67",
+   "i_stanleigh",
+   "iamsamirhere",
+   "icy_black_deep",
+   "illestpreacha",
+   "jeterjp",
+   "kintton",
+   "konosubalife",
+   "kuviman",
+   "leetwhale",
+   "midnight_simon",
+   "moonmen",
+   "owhska",
+   "penguin_operat0r",
+   "raspredval1337",
+   "rcrnstn",
+   "rumbletumjum",
+   "sirlordgood",
+   "solaris428",
+   "spiritoffreyja",
+   "sputnikplop",
+   "subaru_baja",
+   "tvjosh",
+   "unstabledeus"
+  ]
+ },
+ "subscribers": {
+  "count": 10,
+  "points": 10,
+  "list": [
+   {
+    "login": "turing_moon_yatch",
+    "tier": "1000",
+    "gifted_by": null
+   },
+   {
+    "login": "themackabu",
+    "tier": "1000",
+    "gifted_by": null
+   },
+   {
+    "login": "subaru_baja",
+    "tier": "1000",
+    "gifted_by": null
+   },
+   {
+    "login": "sockheadrps",
+    "tier": "1000",
+    "gifted_by": null
+   },
+   {
+    "login": "my_ass_is_open_and_workin",
+    "tier": "1000",
+    "gifted_by": "ananonymousgifter"
+   },
+   {
+    "login": "mcpqndq",
+    "tier": "1000",
+    "gifted_by": null
+   },
+   {
+    "login": "kinesinships",
+    "tier": "1000",
+    "gifted_by": null
+   },
+   {
+    "login": "kassmon",
+    "tier": "1000",
+    "gifted_by": null
+   },
+   {
+    "login": "dotwinex",
+    "tier": "1000",
+    "gifted_by": null
+   },
+   {
+    "login": "cmgriffing",
+    "tier": "1000",
+    "gifted_by": null
+   }
+  ]
+ }
+}

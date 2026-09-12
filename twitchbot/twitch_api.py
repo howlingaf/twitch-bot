@@ -288,33 +288,46 @@ async def get_subscribers() -> list[dict] | None:
     return out
 
 
-async def get_category_rank(game_id: str, user_login: str) -> tuple[int, int, int] | None:
-    """Where user_login sits in its category right now: (viewers, rank, of).
+async def get_category_snapshot(game_id: str, user_login: str) -> dict | None:
+    """Where user_login sits in its category right now, and who is above them.
 
-    Helix returns a category's streams viewer-descending, so rank is position
-    in that list. It pages 100 at a time and the tail is enormous, so this
-    stops once past the streamer — `of` is therefore "at least this many",
-    which is all the rank needs. None if the lookup fails or they're offline.
+    Returns {viewers, rank, of, leaders} — leaders being the category's top few
+    as (login, viewer_count), captured because Twitch keeps no history of a
+    category's standings either: "who was #1 that night" is unanswerable after
+    the fact unless it was written down at the time.
+
+    Helix returns a category's streams viewer-descending, so rank is position in
+    that list. The walk stops once past the streamer, making `of` "at least this
+    many", which is all a rank needs. None only if the lookup itself fails.
     """
     seen = 0
     cursor = ""
-    for _ in range(10):             # 1000 streams deep is far past any rank worth naming
+    leaders: list[tuple[str, int]] = []
+    # 3000 deep: a quiet stream sits far down a big category, and stopping short
+    # recorded a null rather than a rank.
+    for _ in range(30):
         url = (f"https://api.twitch.tv/helix/streams?game_id={game_id}&first=100"
                + (f"&after={cursor}" if cursor else ""))
         status, body = await _twitch_request("GET", url)
         if status != 200:
-            logger.error("Category rank lookup failed. HTTP %s: %s", status, body)
+            logger.error("Category snapshot failed. HTTP %s: %s", status, body)
             return None
         data = json.loads(body)
         entries = data.get("data", [])
+        if not leaders:
+            leaders = [(e["user_login"], e["viewer_count"]) for e in entries[:5]]
         for i, st in enumerate(entries, 1):
             if st["user_login"].lower() == user_login.lower():
-                return st["viewer_count"], seen + i, seen + len(entries)
+                return {"viewers": st["viewer_count"], "rank": seen + i,
+                        "of": seen + len(entries), "leaders": leaders}
         seen += len(entries)
         cursor = data.get("pagination", {}).get("cursor", "")
         if not cursor or not entries:
-            return None
-    return None
+            break
+    # Not found in the listing — Helix omits very small streams from a category
+    # page often enough that this is normal, not an error. The leaders still
+    # stand, so the standings are recorded even when our own rank isn't.
+    return {"viewers": None, "rank": None, "of": seen, "leaders": leaders}
 
 
 async def get_chatters() -> list[tuple[str, str]] | None:
