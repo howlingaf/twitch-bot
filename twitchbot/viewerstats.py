@@ -416,15 +416,20 @@ def _sections(db, sids: list[str], headline: str, top: int, subline: str = "") -
     # Viewer count and rank are sampled a minute at a time while live (see
     # chatstore.viewers); a stream from before that existed simply has none.
     peak = db.execute(
-        f"SELECT MAX(viewers), MIN(rank), MAX(of) FROM viewers WHERE stream_id IN ({marks})",
-        tuple(sids)).fetchone()
+        f"SELECT MAX(viewers) FROM viewers WHERE stream_id IN ({marks})", tuple(sids)).fetchone()
+    # The category size must come from the SAME sample as the best rank. Taken
+    # separately they mixed two minutes, and a mid-stream category change --
+    # into one with thousands of streams -- read as "#1 of 2928".
+    best = db.execute(
+        f"SELECT rank, of FROM viewers WHERE stream_id IN ({marks}) AND rank IS NOT NULL "
+        f"ORDER BY rank LIMIT 1", tuple(sids)).fetchone()
     avg = db.execute(
         f"SELECT AVG(viewers) FROM viewers WHERE stream_id IN ({marks})", tuple(sids)).fetchone()[0]
     peak_line = ""
     if peak and peak[0] is not None:
         peak_line = f"peak {peak[0]} viewers · avg {avg:.0f}"
-        if peak[1]:
-            peak_line += f" · best #{peak[1]} of {peak[2]} in category"
+        if best:
+            peak_line += f" · best #{best[0]} of {best[1]} in category"
 
     stats = ([subline] if subline else []) + ([peak_line] if peak_line else []) + [
              f"{mins // 60}h{mins % 60:02d}m · {present} in chat · {chatters} chatted · "
