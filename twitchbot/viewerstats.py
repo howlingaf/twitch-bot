@@ -406,10 +406,13 @@ def _sections(db, sids: list[str], headline: str, top: int, subline: str = "") -
     regular = sum(1 for l in here if attended[l] * 2 > len(prior))
 
     # Follows live in this table for want of a better one, but they aren't
-    # support and carry no amount — they'd read as "follow x11 (0)".
+    # support and carry no amount — they'd read as "follow x11 (0)". Each
+    # subgift row is one recipient of a gift already counted by its
+    # submysterygift, and its amount is that recipient's months: counting both
+    # read ten gifted subs as "subgift x10 (16), submysterygift x2 (10)".
     events = db.execute(
         f"SELECT kind, COUNT(*), SUM(amount) FROM events WHERE stream_id IN ({marks}) "
-        f"AND kind != 'follow' GROUP BY kind", tuple(sids)).fetchall()
+        f"AND kind NOT IN ('follow', 'subgift') GROUP BY kind", tuple(sids)).fetchall()
 
     # The category leads the description rather than riding on the title, which
     # is one line however long the stream name gets.
@@ -472,12 +475,30 @@ def _sections(db, sids: list[str], headline: str, top: int, subline: str = "") -
         names = [f"{l} x{a}" if amounts and a else l for l, _, a in rows]
         return _wrap(names)
 
+    def gifted():
+        """`gifter xN` — subs given away, not subs taken.
+
+        One subgift row per recipient, so its count is the number of subs
+        gifted. A bomb announced only as a submysterygift (no per-recipient
+        rows seen) falls back to the bomb's own size.
+        """
+        per = db.execute(
+            f"SELECT login, "
+            f"  SUM(CASE WHEN kind='subgift' THEN 1 ELSE 0 END), "
+            f"  SUM(CASE WHEN kind='submysterygift' THEN amount ELSE 0 END) "
+            f"FROM events WHERE stream_id IN ({marks}) AND kind IN ('subgift','submysterygift') "
+            f"AND login NOT IN ({holes}) GROUP BY login", (*sids, *skip)).fetchall()
+        rows = sorted(((l, singles or bombs) for l, singles, bombs in per if singles or bombs),
+                      key=lambda r: (-r[1], r[0]))
+        return _wrap([f"{l} x{n}" for l, n in rows])
+
     return {
         "headline": headline,
         "stats": stats,
         "cheered": who(("bits",)),
         "followed": who(("follow",), amounts=False),
-        "subscribed": who(("sub", "resub", "subgift", "submysterygift"), amounts=False),
+        "subscribed": who(("sub", "resub"), amounts=False),
+        "gifted": gifted(),
         "lurkers": _table([r for r, (_, p, _) in zip(fmt, rows) if p >= LURKER_STAY][:top],
                           ("viewer", "stay", "hours")),
         "stay": _table([r for r, (_, p, _) in zip(fmt, rows) if p < LURKER_STAY][:top],
@@ -493,7 +514,7 @@ def _report(db, sids: list[str], headline: str, top: int, subline: str = "") -> 
     sec = _sections(db, sids, headline, top, subline)
     parts = ["\n".join([sec["headline"], *sec["stats"]])]
     for title, key in (("Cheered", "cheered"), ("Followed", "followed"),
-                       ("Subscribed", "subscribed"),
+                       ("Subscribed", "subscribed"), ("Gifted subs", "gifted"),
                        ("Top lurkers (90%+)", "lurkers"), ("Longest stay", "stay"),
                        ("Most messages", "msgs"), ("Raiders", "raiders")):
         if sec[key]:
@@ -535,6 +556,7 @@ def report_embeds(db, sids: list[str], headline: str, top: int = 10,
         {"name": "Cheered", "value": sec["cheered"][:1024]} if sec["cheered"] else None,
         {"name": "Followed", "value": sec["followed"][:1024]} if sec["followed"] else None,
         {"name": "Subscribed", "value": sec["subscribed"][:1024]} if sec["subscribed"] else None,
+        {"name": "Gifted subs", "value": sec["gifted"][:1024]} if sec["gifted"] else None,
         {"name": "Raiders", "value": _fence(sec["raiders"])[:1024]} if sec["raiders"] else None,
     ) if f]
     second = {"fields": [f for f in (
