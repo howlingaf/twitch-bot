@@ -397,7 +397,11 @@ def _sections(db, sids: list[str], headline: str, top: int, subline: str = "") -
     # it keeps meaning the same thing as the record grows.
     window = set(sids)
     starts = min((t for sid, t, _ in all_streams if sid in window), default=0)
-    prior = [sid for sid, t, _ in all_streams if t < starts]
+    # Only streams with a presence record count: the chat-history import added
+    # streams known from messages alone (vod-*), and counting those as streams
+    # nobody attended pushed "more than half" out of everyone's reach.
+    tracked = {sid for (sid,) in db.execute("SELECT DISTINCT stream_id FROM presence")}
+    prior = [sid for sid, t, _ in all_streams if t < starts and sid in tracked]
     attended = Counter()
     for sid in prior:
         for (l,) in db.execute("SELECT DISTINCT login FROM presence WHERE stream_id = ?", (sid,)):

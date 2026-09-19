@@ -8,6 +8,7 @@ from twitchbot import Bot, overlay_handler, log_maintenance_loop, logger
 from twitchbot.overlay import serve_overlay
 from twitchbot.config import OVERLAY_PORT, CONSOLE_SECRET, CONSOLE_PORT, DISCORD_BOT_URL
 from twitchbot.chat_auth import ChatTokenManager, chat_token_refresh_loop
+from twitchbot.chat_watchdog import chat_watchdog_loop
 from twitchbot.console import make_console_app
 from twitchbot.discord_log import DiscordLogHandler, discord_log_loop
 
@@ -19,6 +20,7 @@ async def main():
     token = await chat_tokens.ensure_fresh()
     bot = Bot(token=token)
     chat_refresh_task = asyncio.create_task(chat_token_refresh_loop(bot, chat_tokens))
+    chat_watchdog_task = asyncio.create_task(chat_watchdog_loop(bot))
 
     overlay_host = "0.0.0.0"
 
@@ -66,6 +68,7 @@ async def main():
         with contextlib.suppress(asyncio.CancelledError):
             await log_maintenance_task
 
+        chat_watchdog_task.cancel()
         chat_refresh_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await chat_refresh_task
