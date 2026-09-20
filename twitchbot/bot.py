@@ -58,6 +58,10 @@ AD_LENGTH_SECONDS = 180
 # and a warning is only ever sent when an ad is genuinely about to run.
 AD_RETRY_DELAY_SECONDS = 5 * 60
 AD_MAX_ATTEMPTS = 3
+# Floor on the air between a manual break ending and the next scheduled one
+# starting, for a manual ad short enough that its credit alone wouldn't clear
+# Twitch's ~8-minute back-to-back refusal (retry_after=480).
+MANUAL_AD_MIN_GAP_SECONDS = 10 * 60
 
 
 def _parse_iso(ts: str) -> datetime:
@@ -791,9 +795,13 @@ class Bot(commands.Bot):
             )
         first_cycle = run_first_immediately
         # Anchored to each cycle's START so the warning + break don't push the
-        # period out. A full period away when the first ad is skipped: the
-        # loop only skips the wait on its first cycle, so anchoring at "now"
-        # would fire an ad immediately on a restart into a live stream.
+        # period out. The schedule is deliberately NOT a fixed grid: a manual
+        # break (run_manual_ad) pushes the next one back by the credit it
+        # earned, and every later break rides that shift — total ad time then
+        # tracks what the pre-roll bank actually needs. A full period away
+        # when the first ad is skipped: the loop only skips the wait on its
+        # first cycle, so anchoring at "now" would fire an ad immediately on
+        # a restart into a live stream.
         self.next_warning_mono = time.monotonic() + (
             0 if run_first_immediately else AD_PERIOD_SECONDS)
 
@@ -923,10 +931,14 @@ class Bot(commands.Bot):
 
         Sends the same chat messages a scheduled break does, minus the
         one-minute warning — the point of the button is "cover me now".
-        A manual break earns pre-roll credit like any other, so the next
-        scheduled break moves back proportionally: a 60s ad is a third of
-        the usual 180s break, so a third of the period (~20 min) — and
-        never forward, if the next break was already further out.
+        The goal is the bare minimum ad time that keeps pre-rolls away, so
+        the break's pre-roll credit counts against the schedule: the next
+        break moves back to at least this ad's start plus the credit earned
+        (a 60s ad is a third of the 180s break, so a third of the period,
+        ~20 min), with a MANUAL_AD_MIN_GAP_SECONDS floor so breaks never
+        run back to back. A break is never pulled closer — when the next
+        one is already beyond the credit, the schedule doesn't move (the
+        bank is full enough that the manual minute buys nothing there).
         """
         if not self.is_live:
             return False, "not live"
@@ -939,12 +951,15 @@ class Bot(commands.Bot):
         if not served:
             self.ad_phase = "idle"
             return False, "Twitch\nrefused"
-        self.ad_phase_ends = time.monotonic() + served
+        now = time.monotonic()
+        self.ad_phase_ends = now + served
         if self.next_warning_mono is not None:
+            credit = AD_PERIOD_SECONDS * served / AD_LENGTH_SECONDS
             self.next_warning_mono = max(
                 self.next_warning_mono,
-                time.monotonic()
-                + AD_PERIOD_SECONDS * served / AD_LENGTH_SECONDS,
+                now + credit - AD_WARNING_SECONDS,
+                self.ad_phase_ends
+                + MANUAL_AD_MIN_GAP_SECONDS - AD_WARNING_SECONDS,
             )
         await self._safe_send(f"Ad starting ({_ad_length_label(served)}).")
         asyncio.create_task(self._manual_ad_wrapup(served))
