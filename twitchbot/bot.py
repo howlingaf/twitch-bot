@@ -59,9 +59,17 @@ AD_LENGTH_SECONDS = 180
 AD_RETRY_DELAY_SECONDS = 5 * 60
 AD_MAX_ATTEMPTS = 3
 # Floor on the air between a manual break ending and the next scheduled one
-# starting, for a manual ad short enough that its credit alone wouldn't clear
-# Twitch's ~8-minute back-to-back refusal (retry_after=480).
+# starting — Twitch refuses back-to-back breaks for ~8 min (retry_after=480).
+# The one delayed break snaps back to the grid afterwards.
 MANUAL_AD_MIN_GAP_SECONDS = 10 * 60
+# Seconds of pre-roll cover one second of ad buys, measured from the logs
+# (a 180s break moved preroll_free_time 185 -> 3605: +3420s, i.e. 19x). Used
+# to size each scheduled break to what the bank actually needs; sizing errors
+# self-correct next hour because the bank is re-read, not modeled.
+AD_CREDIT_RATE = 19
+# Size breaks to cover until the next slot plus this much slack for retries.
+AD_SCHEDULE_SLACK_SECONDS = 120
+AD_MIN_LENGTH_SECONDS = 30
 
 
 def _parse_iso(ts: str) -> datetime:
@@ -150,6 +158,7 @@ class Bot(commands.Bot):
         # them into seconds-remaining on request.
         self.ad_phase = "idle"                        # idle | warn | ad
         self.ad_phase_ends = 0.0                      # when warn/ad ends
+        self.ad_anchor_mono = 0.0                     # cadence grid origin
         self.next_warning_mono: float | None = None   # None = loop not running
         self.spotify_task = None
         self.lt_task = None
@@ -794,15 +803,15 @@ class Bot(commands.Bot):
                 "or run_first_immediately=False)."
             )
         first_cycle = run_first_immediately
-        # Anchored to each cycle's START so the warning + break don't push the
-        # period out. The schedule is deliberately NOT a fixed grid: a manual
-        # break (run_manual_ad) pushes the next one back by the credit it
-        # earned, and every later break rides that shift — total ad time then
-        # tracks what the pre-roll bank actually needs. A full period away
-        # when the first ad is skipped: the loop only skips the wait on its
-        # first cycle, so anchoring at "now" would fire an ad immediately on
-        # a restart into a live stream.
-        self.next_warning_mono = time.monotonic() + (
+        # Warnings fire on a fixed grid: anchor + k*period, so breaks land at
+        # the same minute every hour no matter what happens in between. The
+        # "bare minimum ads" half of the deal comes from sizing each break to
+        # the pre-roll bank (_needed_ad_length) rather than moving the grid.
+        # The first slot is a full period out when the first ad is skipped:
+        # the loop only skips the WAIT on its first cycle, so a slot at "now"
+        # would fire an ad immediately on a restart into a live stream.
+        self.ad_anchor_mono = time.monotonic()
+        self.next_warning_mono = self.ad_anchor_mono + (
             0 if run_first_immediately else AD_PERIOD_SECONDS)
 
         try:
@@ -820,8 +829,8 @@ class Bot(commands.Bot):
                         if not self.is_live:
                             break
 
-                    self.next_warning_mono = time.monotonic() + AD_PERIOD_SECONDS
-                    served, before = 0, None
+                    self.next_warning_mono = self._next_ad_slot(time.monotonic())
+                    served, before, length = 0, None, 0
 
                     for attempt in range(1, AD_MAX_ATTEMPTS + 1):
                         if not self.is_live:
@@ -838,6 +847,16 @@ class Bot(commands.Bot):
                             await asyncio.sleep(AD_RETRY_DELAY_SECONDS)
                             continue
 
+                        length = self._needed_ad_length(
+                            before.get("preroll_free_time") or 0)
+                        if length == 0:
+                            logger.info(
+                                "Skipping this slot: %ss of pre-roll cover banked "
+                                "(manual ads have this hour covered).",
+                                before.get("preroll_free_time"),
+                            )
+                            break
+
                         self.ad_phase = "warn"
                         self.ad_phase_ends = time.monotonic() + AD_WARNING_SECONDS
                         await self._safe_send("Ad in 1 minute!")
@@ -850,7 +869,7 @@ class Bot(commands.Bot):
                         if not self.is_live:
                             break
 
-                        served = await start_commercial(AD_LENGTH_SECONDS)
+                        served = await start_commercial(length)
                         if served:
                             break
 
@@ -863,6 +882,9 @@ class Bot(commands.Bot):
 
                     if not self.is_live:
                         break
+
+                    if length == 0:    # slot skipped, bank already covers it
+                        continue
 
                     if not served:
                         await self._alert_ads_down()
@@ -908,6 +930,25 @@ class Bot(commands.Bot):
 
         logger.info("Ad loop stopped (stream offline).")
 
+    def _next_ad_slot(self, now: float) -> float:
+        """The first warning slot on the cadence grid strictly after `now`."""
+        k = int((now - self.ad_anchor_mono) // AD_PERIOD_SECONDS) + 1
+        return self.ad_anchor_mono + k * AD_PERIOD_SECONDS
+
+    @staticmethod
+    def _needed_ad_length(banked: int) -> int:
+        """Seconds of break needed to keep pre-rolls away until the next slot.
+
+        Sized against the bank Twitch reports, so credit from manual breaks
+        automatically shortens the next scheduled one instead of moving it.
+        0 means the slot can be skipped outright.
+        """
+        required = AD_PERIOD_SECONDS + AD_SCHEDULE_SLACK_SECONDS - banked
+        if required <= 0:
+            return 0
+        length = (required + AD_CREDIT_RATE - 1) // AD_CREDIT_RATE
+        return max(AD_MIN_LENGTH_SECONDS, min(AD_LENGTH_SECONDS, length))
+
     def ad_status(self) -> tuple[str, int]:
         """(phase, seconds remaining) for the Stream Deck countdown.
 
@@ -931,14 +972,12 @@ class Bot(commands.Bot):
 
         Sends the same chat messages a scheduled break does, minus the
         one-minute warning — the point of the button is "cover me now".
-        The goal is the bare minimum ad time that keeps pre-rolls away, so
-        the break's pre-roll credit counts against the schedule: the next
-        break moves back to at least this ad's start plus the credit earned
-        (a 60s ad is a third of the 180s break, so a third of the period,
-        ~20 min), with a MANUAL_AD_MIN_GAP_SECONDS floor so breaks never
-        run back to back. A break is never pulled closer — when the next
-        one is already beyond the credit, the schedule doesn't move (the
-        bank is full enough that the manual minute buys nothing there).
+        The schedule stays on its fixed grid: this break's credit lands in
+        the pre-roll bank, which automatically SHORTENS the next scheduled
+        break (or skips it) via _needed_ad_length — minimum total ad time
+        without the cadence ever moving. The only exception is the
+        MANUAL_AD_MIN_GAP_SECONDS floor, which can delay the one next break
+        if this ad ends too close to it; the grid snaps back after.
         """
         if not self.is_live:
             return False, "not live"
@@ -951,13 +990,10 @@ class Bot(commands.Bot):
         if not served:
             self.ad_phase = "idle"
             return False, "Twitch\nrefused"
-        now = time.monotonic()
-        self.ad_phase_ends = now + served
+        self.ad_phase_ends = time.monotonic() + served
         if self.next_warning_mono is not None:
-            credit = AD_PERIOD_SECONDS * served / AD_LENGTH_SECONDS
             self.next_warning_mono = max(
                 self.next_warning_mono,
-                now + credit - AD_WARNING_SECONDS,
                 self.ad_phase_ends
                 + MANUAL_AD_MIN_GAP_SECONDS - AD_WARNING_SECONDS,
             )
