@@ -141,6 +141,12 @@ class Bot(commands.Bot):
         self.spotify = None
         self.is_live = False
         self.ad_task = None
+        # Ad-loop state, exposed for the Stream Deck countdown (deck.py) and
+        # steerable by run_manual_ad. Monotonic deadlines; ad_status() turns
+        # them into seconds-remaining on request.
+        self.ad_phase = "idle"                        # idle | warn | ad
+        self.ad_phase_ends = 0.0                      # when warn/ad ends
+        self.next_warning_mono: float | None = None   # None = loop not running
         self.spotify_task = None
         self.lt_task = None
         self._last_spotify_track_id = None
@@ -788,7 +794,7 @@ class Bot(commands.Bot):
         # period out. A full period away when the first ad is skipped: the
         # loop only skips the wait on its first cycle, so anchoring at "now"
         # would fire an ad immediately on a restart into a live stream.
-        next_warning_at = time.monotonic() + (
+        self.next_warning_mono = time.monotonic() + (
             0 if run_first_immediately else AD_PERIOD_SECONDS)
 
         try:
@@ -798,11 +804,15 @@ class Bot(commands.Bot):
                 # schedule instead of dying for the rest of the stream.
                 try:
                     if not first_cycle:
-                        await asyncio.sleep(max(0, next_warning_at - time.monotonic()))
+                        # Re-check the deadline as it sleeps: a manual ad
+                        # (run_manual_ad) pushes it back mid-nap.
+                        while self.is_live and \
+                                (delay := self.next_warning_mono - time.monotonic()) > 0:
+                            await asyncio.sleep(min(delay, 5))
                         if not self.is_live:
                             break
 
-                    next_warning_at = time.monotonic() + AD_PERIOD_SECONDS
+                    self.next_warning_mono = time.monotonic() + AD_PERIOD_SECONDS
                     served, before = 0, None
 
                     for attempt in range(1, AD_MAX_ATTEMPTS + 1):
@@ -820,6 +830,8 @@ class Bot(commands.Bot):
                             await asyncio.sleep(AD_RETRY_DELAY_SECONDS)
                             continue
 
+                        self.ad_phase = "warn"
+                        self.ad_phase_ends = time.monotonic() + AD_WARNING_SECONDS
                         await self._safe_send("Ad in 1 minute!")
                         logger.info(
                             "%s ad alert sent (attempt %d).",
@@ -834,6 +846,7 @@ class Bot(commands.Bot):
                         if served:
                             break
 
+                        self.ad_phase = "idle"
                         logger.warning(
                             "Ad failed to start (attempt %d/%d).",
                             attempt, AD_MAX_ATTEMPTS,
@@ -847,6 +860,8 @@ class Bot(commands.Bot):
                         await self._alert_ads_down()
                         continue
 
+                    self.ad_phase = "ad"
+                    self.ad_phase_ends = time.monotonic() + served
                     await self._safe_send(f"Ad starting ({_ad_length_label(served)}).")
 
                     await asyncio.sleep(served)
@@ -875,11 +890,76 @@ class Bot(commands.Bot):
                     )
                 finally:
                     first_cycle = False
+                    self.ad_phase = "idle"
 
         except asyncio.CancelledError:
             logger.info("Ad loop cancelled (stream offline).")
+        finally:
+            self.ad_phase = "idle"
+            self.next_warning_mono = None
 
         logger.info("Ad loop stopped (stream offline).")
+
+    def ad_status(self) -> tuple[str, int]:
+        """(phase, seconds remaining) for the Stream Deck countdown.
+
+        Phases: offline; idle (seconds until the next scheduled ad STARTS,
+        i.e. warning time plus the warning minute); warn (until the ad
+        starts — the same countdown chat was just given); ad (until the
+        break ends). All derived from the deadlines the loop itself runs
+        on, so the key and the chat messages can't disagree.
+        """
+        now = time.monotonic()
+        if not self.is_live:
+            return "offline", 0
+        if self.ad_phase in ("warn", "ad"):
+            return self.ad_phase, int(self.ad_phase_ends - now)
+        if self.next_warning_mono is None:
+            return "idle", 0
+        return "idle", int(self.next_warning_mono - now) + AD_WARNING_SECONDS
+
+    async def run_manual_ad(self, length: int = 60) -> tuple[bool, str]:
+        """Start an ad break right now (Stream Deck button / console).
+
+        Sends the same chat messages a scheduled break does, minus the
+        one-minute warning — the point of the button is "cover me now".
+        A manual break earns pre-roll credit like any other, so the next
+        scheduled break moves back proportionally: a 60s ad is a third of
+        the usual 180s break, so a third of the period (~20 min) — and
+        never forward, if the next break was already further out.
+        """
+        if not self.is_live:
+            return False, "not live"
+        if self.ad_phase != "idle":
+            return False, f"already in {self.ad_phase} phase"
+        length = max(30, min(180, int(length)))
+        self.ad_phase = "ad"    # reserve before the awaits; unset on failure
+        await _log_ad_state("pre-break manual")
+        served = await start_commercial(length)
+        if not served:
+            self.ad_phase = "idle"
+            return False, "Twitch\nrefused"
+        self.ad_phase_ends = time.monotonic() + served
+        if self.next_warning_mono is not None:
+            self.next_warning_mono = max(
+                self.next_warning_mono,
+                time.monotonic()
+                + AD_PERIOD_SECONDS * served / AD_LENGTH_SECONDS,
+            )
+        await self._safe_send(f"Ad starting ({_ad_length_label(served)}).")
+        asyncio.create_task(self._manual_ad_wrapup(served))
+        return True, f"{served}s ad\nrunning"
+
+    async def _manual_ad_wrapup(self, served: int) -> None:
+        try:
+            await asyncio.sleep(served)
+            self.ad_phase = "idle"
+            if self.is_live:
+                await self._safe_send("Ad break over!")
+                await _log_ad_state("post-break manual")
+        except Exception:
+            self.ad_phase = "idle"
+            logger.exception("Manual ad wrap-up failed")
 
     # ---------------- PROBLEM TIMER COMMANDS ----------------
     # At or above this many minutes the timer also announces "10 minutes left".

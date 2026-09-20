@@ -7,10 +7,12 @@ from aiohttp import web
 from twitchbot import Bot, overlay_handler, log_maintenance_loop, logger
 from twitchbot.overlay import serve_overlay
 from twitchbot.config import OVERLAY_PORT, CONSOLE_SECRET, CONSOLE_PORT, DISCORD_BOT_URL
+from twitchbot.config import DECK_SECRET, DECK_HOST, DECK_PORT
 from twitchbot.chat_auth import ChatTokenManager, chat_token_refresh_loop
 from twitchbot.chat_watchdog import chat_watchdog_loop
 from twitchbot.emotewatch import emote_watch_loop
 from twitchbot.console import make_console_app
+from twitchbot.deck import make_deck_app
 from twitchbot.discord_log import DiscordLogHandler, discord_log_loop
 
 
@@ -56,6 +58,17 @@ async def main():
     else:
         logger.info("CONSOLE_SECRET not set; console API disabled.")
 
+    # Stream Deck ad API (see deck.py). Loopback by default; reaching it from
+    # the streaming PC needs the explicit DECK_HOST=0.0.0.0 opt-in in .env.
+    deck_runner = None
+    if DECK_SECRET:
+        deck_runner = web.AppRunner(make_deck_app(bot))
+        await deck_runner.setup()
+        await web.TCPSite(deck_runner, DECK_HOST, DECK_PORT).start()
+        logger.info("Stream Deck API listening on http://%s:%d", DECK_HOST, DECK_PORT)
+    else:
+        logger.info("DECK_SECRET not set; Stream Deck API disabled.")
+
     try:
         await bot.start()
     finally:
@@ -65,6 +78,8 @@ async def main():
 
         if console_runner:
             await console_runner.cleanup()
+        if deck_runner:
+            await deck_runner.cleanup()
 
         log_maintenance_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):

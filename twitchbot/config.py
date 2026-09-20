@@ -57,3 +57,10 @@ RECAP_SECRET = os.getenv("RECAP_SECRET", "")
 # set. Bound to localhost only; the Discord bot on the same VPS calls it.
 CONSOLE_SECRET = os.getenv("CONSOLE_SECRET", "")
 CONSOLE_PORT = int(os.getenv("CONSOLE_PORT", "8788"))
+
+# Stream Deck ad API (deck.py). Disabled unless DECK_SECRET is set. The
+# Stream Deck lives on the streaming PC, so making it reachable needs the
+# explicit DECK_HOST=0.0.0.0 opt-in (plus opening DECK_PORT in ufw).
+DECK_SECRET = os.getenv("DECK_SECRET", "")
+DECK_HOST = os.getenv("DECK_HOST", "127.0.0.1")
+DECK_PORT = int(os.getenv("DECK_PORT", "8790"))
