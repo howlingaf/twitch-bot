@@ -27,6 +27,18 @@ BOT_LOGIN = (os.getenv("BOT_LOGIN") or "hairyrugaf").lower()
 REPORT_IGNORE = {BROADCASTER_LOGIN, BOT_LOGIN} | {
     x.strip().lower() for x in (os.getenv("REPORT_IGNORE") or "").split(",") if x.strip()}
 
+# ---------------- Emote watch ----------------
+# Channels whose public chat is read anonymously (no account, no messages sent)
+# for uses of our emotes -- see twitchbot/emotewatch.py. Kept to channels with
+# a real connection to ours: the ones that raid us, and the ones the owner and
+# the regulars actually sit in. Empty disables it.
+EMOTE_WATCH_CHANNELS = [x.strip().lower() for x in (
+    os.getenv("EMOTE_WATCH_CHANNELS")
+    or "lcolonq,mayarainer,mrdboy,quantumapprentice,skepticbeliever,wizhatt,theshyhat"
+).split(",") if x.strip()]
+# All 18 of our channel emotes share this prefix.
+EMOTE_PREFIX = os.getenv("EMOTE_PREFIX") or "howlin67"
+
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
 SPOTIFY_REDIRECT_URI = os.getenv("SPOTIFY_REDIRECT_URI")

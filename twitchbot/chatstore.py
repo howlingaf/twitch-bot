@@ -79,6 +79,16 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE INDEX IF NOT EXISTS events_login ON events (login);
 
+CREATE TABLE IF NOT EXISTS emote_sightings (
+    id          INTEGER PRIMARY KEY,
+    ts          INTEGER NOT NULL,
+    channel     TEXT NOT NULL,      -- whose chat it was used in
+    login       TEXT NOT NULL,      -- who used it
+    emote       TEXT NOT NULL,      -- one row per emote per message
+    content     TEXT                -- the message it appeared in
+);
+CREATE INDEX IF NOT EXISTS emote_sightings_channel ON emote_sightings (channel, ts);
+
 CREATE TABLE IF NOT EXISTS viewers (
     minute      INTEGER NOT NULL,   -- unix seconds, floored to the minute
     stream_id   TEXT NOT NULL,
@@ -188,6 +198,14 @@ class ChatStore:
             "INSERT INTO events (ts, stream_id, kind, user_id, login, amount, tier, detail) "
             "VALUES (?,?,?,?,?,?,?,?)",
             (ts, stream_id, kind, user_id, login.lower(), int(amount or 0), tier, detail),
+        )
+
+    def add_emote_sighting(self, *, ts: int, channel: str, login: str,
+                           emote: str, content: str) -> None:
+        """One of our emotes, used in someone else's chat. See emotewatch.py."""
+        self.db.execute(
+            "INSERT INTO emote_sightings (ts, channel, login, emote, content) VALUES (?,?,?,?,?)",
+            (ts, channel.lower(), login.lower(), emote, content[:500]),
         )
 
     def has_event(self, stream_id: str, kind: str, login: str) -> bool:
