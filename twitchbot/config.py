@@ -34,7 +34,7 @@ REPORT_IGNORE = {BROADCASTER_LOGIN, BOT_LOGIN} | {
 # the regulars actually sit in. Empty disables it.
 EMOTE_WATCH_CHANNELS = [x.strip().lower() for x in (
     os.getenv("EMOTE_WATCH_CHANNELS")
-    or "lcolonq,mayarainer,mrdboy,quantumapprentice,skepticbeliever,wizhatt,theshyhat"
+    or "lcolonq,meisaka,mayarainer,mrdboy,quantumapprentice,skepticbeliever,wizhatt,theshyhat"
 ).split(",") if x.strip()]
 # All 18 of our channel emotes share this prefix.
 EMOTE_PREFIX = os.getenv("EMOTE_PREFIX") or "howlin67"
