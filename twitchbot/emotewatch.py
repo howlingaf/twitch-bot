@@ -161,7 +161,10 @@ async def emote_watch_loop(store) -> None:
             return
         except Exception as e:
             fails += 1
-            # Reading someone else's chat is a nice-to-have, so a failure here
-            # is logged quietly and retried rather than escalated.
-            logger.warning("Emote watch connection failed (%d): %r", fails, e)
+            # Twitch drops these anonymous connections routinely and the retry
+            # below picks them straight back up, so a single failure is on-disk
+            # noise. Only a run of them means the watch is actually down, and
+            # only that is worth the Discord feed (WARNING and above).
+            level = logger.warning if fails >= 3 else logger.info
+            level("Emote watch connection failed (%d): %r", fails, e)
         await asyncio.sleep(_BACKOFF[min(fails, len(_BACKOFF) - 1)])
