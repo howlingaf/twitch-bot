@@ -770,6 +770,9 @@ class Bot(commands.Bot):
                 banked,
             )
             return
+        # CRITICAL: logs.howling.one/alerts raises it on the Stream Deck.
+        logger.critical("Ad break failed after %d attempts; pre-rolls are back on.",
+                        AD_MAX_ATTEMPTS)
         await alert_owner(
             "⚠️ Twitch ad break failed after "
             f"{AD_MAX_ATTEMPTS} attempts and pre-rolls are back on — viewers "
