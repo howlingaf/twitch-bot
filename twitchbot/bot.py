@@ -42,10 +42,8 @@ from .twitch_api import (
     get_category_snapshot,
 )
 from .chatstore import ChatStore, parse_emotes
-from . import viewerstats
 from .helpers import leetcode_slug, resolve_problem_name
-from .notify import (alert_owner, console_lines, stream_alert, stream_alert_vod,
-                     stream_report as notify_stream_report)
+from .notify import alert_owner, stream_alert, stream_alert_vod
 
 # Ad cadence. The period is measured warning-to-warning, so a break lands at
 # the same point in every hour of a stream.
@@ -463,7 +461,12 @@ class Bot(commands.Bot):
 
         self.store.end_stream(self.stream_id, _now_iso())
         await self._send_recap()
-        await self._post_stream_report()
+        # Follows arrive by polling, not chat; record them for the report on
+        # analytics.howling.one (the Discord post of that report is retired).
+        try:
+            await self._record_follows()
+        except Exception:
+            logger.exception("Failed to record follows")
 
         # Turn the go-live post into its VOD card, once Twitch has the VOD.
         # Off the monitor loop: it can wait minutes.
@@ -538,20 +541,6 @@ class Bot(commands.Bot):
                                  stream_id=self.stream_id, kind="follow",
                                  user_id=user_id, login=login)
         logger.info("Recorded %d follow(s) for stream %s", len(rows), self.stream_id)
-
-    async def _post_stream_report(self):
-        """The stream's chat numbers and the regulars ranking, into
-        #twitch-bot-console. Best effort — a failure is a log line."""
-        try:
-            await self._record_follows()
-            embeds = viewerstats.stream_report_embeds(self.store.db, self.stream_id)
-            ok = await notify_stream_report(embeds)
-            if not ok:      # embeds failed; the numbers still matter more than the format
-                ok = await console_lines(
-                    viewerstats.stream_report(self.store.db, self.stream_id))
-            logger.info("Stream report posted to console: %s", ok)
-        except Exception:
-            logger.exception("Failed to post stream report")
 
     async def _send_recap(self):
         """POST recap data to the Discord bot."""
