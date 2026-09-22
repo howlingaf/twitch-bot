@@ -10,7 +10,6 @@ from twitchbot.config import OVERLAY_PORT, CONSOLE_SECRET, CONSOLE_PORT, DISCORD
 from twitchbot.config import DECK_SECRET, DECK_HOST, DECK_PORT
 from twitchbot.chat_auth import ChatTokenManager, chat_token_refresh_loop
 from twitchbot.chat_watchdog import chat_watchdog_loop
-from twitchbot.emotewatch import emote_watch_loop
 from twitchbot.console import make_console_app
 from twitchbot.deck import make_deck_app
 from twitchbot.discord_log import DiscordLogHandler, discord_log_loop
@@ -24,7 +23,6 @@ async def main():
     bot = Bot(token=token)
     chat_refresh_task = asyncio.create_task(chat_token_refresh_loop(bot, chat_tokens))
     chat_watchdog_task = asyncio.create_task(chat_watchdog_loop(bot))
-    emote_watch_task = asyncio.create_task(emote_watch_loop(bot.store))
 
     overlay_host = "0.0.0.0"
 
@@ -85,7 +83,6 @@ async def main():
         with contextlib.suppress(asyncio.CancelledError):
             await log_maintenance_task
 
-        emote_watch_task.cancel()
         chat_watchdog_task.cancel()
         chat_refresh_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):

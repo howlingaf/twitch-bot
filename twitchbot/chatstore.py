@@ -200,14 +200,6 @@ class ChatStore:
             (ts, stream_id, kind, user_id, login.lower(), int(amount or 0), tier, detail),
         )
 
-    def add_emote_sighting(self, *, ts: int, channel: str, login: str,
-                           emote: str, content: str) -> None:
-        """One of our emotes, used in someone else's chat. See emotewatch.py."""
-        self.db.execute(
-            "INSERT INTO emote_sightings (ts, channel, login, emote, content) VALUES (?,?,?,?,?)",
-            (ts, channel.lower(), login.lower(), emote, content[:500]),
-        )
-
     def has_event(self, stream_id: str, kind: str, login: str) -> bool:
         """Whether this person already has an event of this kind on this stream.
 

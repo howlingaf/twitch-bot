@@ -27,24 +27,6 @@ BOT_LOGIN = (os.getenv("BOT_LOGIN") or "hairyrugaf").lower()
 REPORT_IGNORE = {BROADCASTER_LOGIN, BOT_LOGIN} | {
     x.strip().lower() for x in (os.getenv("REPORT_IGNORE") or "").split(",") if x.strip()}
 
-# ---------------- Emote watch ----------------
-# Channels whose public chat is read anonymously (no account, no messages sent)
-# for uses of our emotes -- see twitchbot/emotewatch.py. Kept to channels with
-# a real connection to ours: the ones that raid us, and the ones the owner and
-# the regulars actually sit in. Empty disables it.
-EMOTE_WATCH_CHANNELS = [x.strip().lower() for x in (
-    os.getenv("EMOTE_WATCH_CHANNELS")
-    or "lcolonq,meisaka,mayarainer,mrdboy,quantumapprentice,skepticbeliever,wizhatt,theshyhat"
-).split(",") if x.strip()]
-# Beyond the fixed list, every channel live in this category is joined as it
-# goes live and parted when it ends -- a hand-picked list only finds what we
-# already expected. Empty disables the category following.
-EMOTE_WATCH_GAME_ID = os.getenv("EMOTE_WATCH_GAME_ID", "1469308723")  # Software and Game Development
-# Ceiling on channels held at once, and how often the live list is re-checked.
-EMOTE_WATCH_MAX = int(os.getenv("EMOTE_WATCH_MAX") or "250")
-EMOTE_WATCH_REFRESH = int(os.getenv("EMOTE_WATCH_REFRESH") or "180")
-# All 18 of our channel emotes share this prefix.
-EMOTE_PREFIX = os.getenv("EMOTE_PREFIX") or "howlin67"
 
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
