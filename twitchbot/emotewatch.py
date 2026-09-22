@@ -19,6 +19,11 @@ The bot's own account is deliberately NOT used here: that would show up as our
 bot lurking in someone else's channel. Nothing is ever sent to these channels;
 the socket only ever answers Twitch's PING and issues JOIN/PART.
 
+The same reading feeds categorystats.py, which keeps running totals about
+every channel in the category -- schedule, size, how conversational its chat
+is, what it's about, and where our own regulars already hang out -- for
+finding people to network with. Totals only; no one's message text is kept.
+
 Kept apart from bot.py's connection on purpose. If this one dies, chat
 recording for our own stream is unaffected, and vice versa.
 """
@@ -38,6 +43,7 @@ from .config import (
     EMOTE_WATCH_MAX,
     EMOTE_WATCH_REFRESH,
 )
+from .categorystats import CategoryStats
 from .logger import logger
 from .twitch_api import _twitch_request
 
@@ -55,23 +61,25 @@ def _emotes(text: str) -> list[str]:
     return re.findall(rf"\b{re.escape(EMOTE_PREFIX)}\w+", text, re.I)
 
 
-async def _live_channels() -> set[str]:
-    """Everyone streaming our category right now, newest page first. Returns an
-    empty set on failure so a Helix hiccup parts nobody."""
-    found, cursor = set(), ""
+async def _live_streams() -> list[dict]:
+    """Everyone streaming our category right now, as Helix stream records
+    (login, viewers, title, start). Empty on failure, so a Helix hiccup parts
+    nobody and records nothing."""
+    found, cursor = {}, ""
     for _ in range(30):
         status, body = await _twitch_request(
             "GET", f"https://api.twitch.tv/helix/streams?game_id={EMOTE_WATCH_GAME_ID}"
                    f"&first=100" + (f"&after={cursor}" if cursor else ""))
         if status != 200:
             logger.warning("Emote watch could not list the category (HTTP %s).", status)
-            return set()
+            return []
         data = json.loads(body)
-        found |= {s["user_login"].lower() for s in data.get("data", [])}
+        for st in data.get("data", []):
+            found[st["user_login"].lower()] = st
         cursor = data.get("pagination", {}).get("cursor", "")
         if not cursor or not data.get("data") or len(found) >= EMOTE_WATCH_MAX:
             break
-    return found
+    return list(found.values())
 
 
 async def _send_joins(ws, channels: list[str]) -> None:
@@ -82,14 +90,17 @@ async def _send_joins(ws, channels: list[str]) -> None:
             await asyncio.sleep(_JOIN_PAUSE)
 
 
-async def _follow_category(ws, joined: set[str]) -> None:
+async def _follow_category(ws, joined: set[str], stats: CategoryStats) -> None:
     """Keep the joined set in step with who's live. The fixed channels stay
-    joined whether or not they're streaming."""
+    joined whether or not they're streaming. Each poll is also the schedule
+    and size record for the whole category."""
     while True:
         await asyncio.sleep(EMOTE_WATCH_REFRESH)
-        live = await _live_channels()
-        if not live:
+        streams = await _live_streams()
+        if not streams:
             continue
+        stats.on_poll(streams)
+        live = {st["user_login"].lower() for st in streams}
         wanted = (set(EMOTE_WATCH_CHANNELS) | live)
         # Keep the fixed ones, then fill up to the cap with live channels.
         if len(wanted) > EMOTE_WATCH_MAX:
@@ -106,14 +117,17 @@ async def _follow_category(ws, joined: set[str]) -> None:
                         len(joined), len(add), len(drop))
 
 
-async def _session(store) -> None:
+async def _session(store, stats: CategoryStats) -> None:
     """One connection, for as long as it lasts. Returns to be retried."""
     async with websockets.connect(_HOST, ping_interval=None) as ws:
         # No PASS line: that's what makes it anonymous. The nick must be
         # justinfan followed by digits, which is Twitch's read-only guest.
         await ws.send(f"NICK justinfan{random.randint(10000, 99999)}")
         joined: set[str] = set()
-        start = sorted(set(EMOTE_WATCH_CHANNELS) | await _live_channels())[:EMOTE_WATCH_MAX]
+        streams = await _live_streams()
+        stats.on_poll(streams)
+        live = {st["user_login"].lower() for st in streams}
+        start = sorted(set(EMOTE_WATCH_CHANNELS) | live)[:EMOTE_WATCH_MAX]
         logger.info("Emote watch joining %d channels anonymously (%d fixed + the live "
                     "category).", len(start), len(EMOTE_WATCH_CHANNELS))
         # Joining is rate-limited to ~20 channels per 10s, so a few hundred take
@@ -123,7 +137,7 @@ async def _session(store) -> None:
             await _send_joins(ws, start)
             joined.update(start)
             logger.info("Emote watch reading %d channels.", len(joined))
-            await _follow_category(ws, joined)
+            await _follow_category(ws, joined, stats)
 
         follower = asyncio.create_task(_open())
         try:
@@ -135,6 +149,7 @@ async def _session(store) -> None:
                     m = _LINE.match(line)
                     if not m:
                         continue
+                    stats.on_message(m["channel"], m["login"], m["text"])
                     found = _emotes(m["text"])
                     if not found:
                         continue
@@ -145,16 +160,18 @@ async def _session(store) -> None:
                                 m["login"], " ".join(found), m["channel"])
         finally:
             follower.cancel()
+            stats.flush()
 
 
 async def emote_watch_loop(store) -> None:
     if not EMOTE_WATCH_CHANNELS and not EMOTE_WATCH_GAME_ID:
         logger.info("Emote watch disabled (nothing to watch).")
         return
+    stats = CategoryStats(store)
     fails = 0
     while True:
         try:
-            await _session(store)
+            await _session(store, stats)
             fails = 0            # a clean close: reconnect promptly
         except asyncio.CancelledError:
             logger.info("Emote watch cancelled.")

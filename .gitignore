@@ -10,3 +10,4 @@ uv.lock
 *.db
 *.db-wal
 *.db-shm
+research/
