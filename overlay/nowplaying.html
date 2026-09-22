@@ -161,7 +161,13 @@
   }
 
   function connect() {
-    const ws = new WebSocket('ws://5.161.239.81:8765');
+    // Served by the bot itself (https://twitch.howling.one/nowplaying), so
+    // connect back to wherever the page came from; a copy opened as a local
+    // file has no host and uses the public address.
+    const url = location.host
+      ? `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`
+      : 'wss://twitch.howling.one';
+    const ws = new WebSocket(url);
 
     ws.onopen = () => console.log('WebSocket connected');
 

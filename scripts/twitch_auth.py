@@ -36,7 +36,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-REDIRECT_URI = "https://verify.howling.one/twitch/callback"
+REDIRECT_URI = "https://discord.howling.one/twitch/callback"
 
 ACCOUNTS = {
     "broadcaster": {
