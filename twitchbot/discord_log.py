@@ -1,9 +1,9 @@
 """Forward the bot's logs to the Discord bot's /twitch-log endpoint.
 
-WARNING and above only. The feed exists so problems surface without ssh'ing
-into the box; routine INFO (ad cycles, recap captures, Spotify monitor state)
-is operational chatter that lives in the on-disk logs — the owner asked for it
-out of the channel.
+CRITICAL only: chat dying and a failed ad break -- what needs the owner now,
+wherever they are, since Discord reaches their phone. Everything else,
+warnings and ordinary errors included, lives in the logs
+(https://logs.howling.one/twitch-bot) and on the Stream Deck key.
 
 A logging.Handler buffers formatted log lines (thread-safe — log calls come
 from the event loop and from asyncio.to_thread workers), and an async loop
@@ -27,12 +27,6 @@ _FLUSH_INTERVAL = 3
 
 _formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
 
-# WARNING-level chatter that still recovers on its own — kept on disk, only
-# forwarded to Discord at ERROR (i.e. when it's an actual problem). Matched as
-# lowercase substrings of the log message.
-_SUPPRESS_BELOW_ERROR = (
-    "helix 401",                  # 401 -> auto refresh + retry (recovers itself)
-)
 
 
 class DiscordLogHandler(logging.Handler):
@@ -43,12 +37,8 @@ class DiscordLogHandler(logging.Handler):
         self._lock = threading.Lock()
 
     def emit(self, record):
-        if record.levelno < logging.WARNING:
+        if record.levelno < logging.CRITICAL:
             return
-        if record.levelno < logging.ERROR:
-            msg = record.getMessage().lower()
-            if any(p in msg for p in _SUPPRESS_BELOW_ERROR):
-                return
         try:
             line = self.format(record)
         except Exception:
