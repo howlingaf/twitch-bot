@@ -13,8 +13,9 @@ Stream Deck HTTP plugins can't always set headers, or as a bearer header):
                              plugins that can only GET). Replies with plain
                              text for the key: "60s ad running" or why not.
 
-Unlike the console API this binds 0.0.0.0 — the Stream Deck is not on this
-box. The secret is the whole defense, same trust model as the overlay port.
+The Stream Deck isn't on this box: it reaches this through the Cloudflare
+tunnel at https://twitch.howling.one (which routes only these paths here), so
+it binds loopback like the console API. The secret is the whole defense.
 """
 
 import hmac
@@ -61,7 +62,8 @@ def make_deck_app(bot) -> web.Application:
         except ValueError:
             return web.Response(status=400, text="bad length")
         ok, msg = await bot.run_manual_ad(length)
-        logger.info("Deck run-ad (%ss): %s", length, msg)
+        # msg is sized for a key title (two lines); one line in the log.
+        logger.info("Deck run-ad (%ss): %s", length, msg.replace("\n", " "))
         return web.Response(status=200 if ok else 409, text=msg)
 
     app = web.Application()

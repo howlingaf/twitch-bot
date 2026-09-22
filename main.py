@@ -24,7 +24,8 @@ async def main():
     chat_refresh_task = asyncio.create_task(chat_token_refresh_loop(bot, chat_tokens))
     chat_watchdog_task = asyncio.create_task(chat_watchdog_loop(bot))
 
-    overlay_host = "0.0.0.0"
+    # Loopback only: OBS reaches it through the tunnel at wss://twitch.howling.one.
+    overlay_host = "127.0.0.1"
 
     server = await websockets.serve(
         overlay_handler, overlay_host, OVERLAY_PORT,

@@ -858,7 +858,7 @@ class Bot(commands.Bot):
                         if not self.is_live:
                             break
 
-                        served = await start_commercial(length)
+                        served, _ = await start_commercial(length)
                         if served:
                             break
 
@@ -975,10 +975,10 @@ class Bot(commands.Bot):
         length = max(30, min(180, int(length)))
         self.ad_phase = "ad"    # reserve before the awaits; unset on failure
         await _log_ad_state("pre-break manual")
-        served = await start_commercial(length)
+        served, why = await start_commercial(length)
         if not served:
             self.ad_phase = "idle"
-            return False, "Twitch\nrefused"
+            return False, f"ad refused\n{why}"
         self.ad_phase_ends = time.monotonic() + served
         if self.next_warning_mono is not None:
             self.next_warning_mono = max(

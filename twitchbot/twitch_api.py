@@ -115,12 +115,14 @@ async def is_stream_live():
     return live
 
 
-async def start_commercial(length: int = 180) -> int:
-    """Start an ad break. Returns the length Twitch ACTUALLY served, 0 on failure.
+async def start_commercial(length: int = 180) -> tuple[int, str]:
+    """Start an ad break. Returns (length Twitch ACTUALLY served, why not).
 
     The requested length is a request, not a guarantee — Twitch may serve a
     shorter break, and the caller has to time its "ad over" message off what
-    came back rather than what it asked for.
+    came back rather than what it asked for. On failure the length is 0 and
+    the reason is short enough for a Stream Deck key: "cooldown" (Twitch's
+    429 for an ad run too soon after the last), "HTTP <n>", or "no response".
     """
     payload = {
         "broadcaster_id": BROADCASTER_ID,
@@ -133,7 +135,9 @@ async def start_commercial(length: int = 180) -> int:
     )
     if status != 200:
         logger.error("Failed to start ad. HTTP %s: %s", status, body)
-        return 0
+        if status is None:
+            return 0, "no response"
+        return 0, "cooldown" if status == 429 else f"HTTP {status}"
 
     logger.info("Ad started successfully. Response: %s", body)
     try:
@@ -145,7 +149,7 @@ async def start_commercial(length: int = 180) -> int:
         logger.warning("Twitch served a %ss ad, not the %ss requested.", served, length)
     # A 200 with no usable length still means the break started; fall back to
     # what we asked for rather than treating it as a failure.
-    return served or length
+    return served or length, ""
 
 
 async def get_ad_schedule() -> dict | None:
