@@ -35,9 +35,10 @@ async def chat_watchdog_loop(bot):
         if silent < _STALE_SECONDS:
             continue
         alive = bool(conn and conn.is_alive)
-        # CRITICAL: logs.howling.one/alerts raises it on the Stream Deck.
+        # The [tag] is what logs.howling.one/alerts names the Stream Deck key
+        # after; the prose after it is free to change.
         logger.critical(
-            "Twitch chat connection is dead (no PING from Twitch for %d min, socket %s); "
+            "[chat-dead] Twitch chat connection is dead (no PING from Twitch for %d min, socket %s); "
             "restarting the bot so chat is recorded again.",
             silent // 60, "open" if alive else "closed")
         # Let the Discord log feed flush the line above before going down.

@@ -9,13 +9,28 @@ os.makedirs(LOG_DIR, exist_ok=True)
 logger = logging.getLogger("twitch_bot")
 logger.setLevel(logging.INFO)
 
-_log_formatter = logging.Formatter(
-    "%(asctime)s [%(levelname)s] %(name)s - %(message)s"
-)
+_FORMAT = "%(asctime)s [%(levelname)s] %(name)s - %(message)s"
+_log_formatter = logging.Formatter(_FORMAT)
+
+# Console only: a leading "<N>" is the syslog priority, which journald reads
+# and strips, so the level reaches logs.howling.one as a field rather than as
+# text it would have to parse back out. The log files keep the plain format.
+_SYSLOG = {logging.CRITICAL: 2, logging.ERROR: 3, logging.WARNING: 4,
+           logging.INFO: 6, logging.DEBUG: 7}
+
+
+class _SyslogPrefixFormatter(logging.Formatter):
+    """Every line gets the prefix: journald splits a multi-line message into
+    one entry each, and an unprefixed line would land at info."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        prefix = f"<{_SYSLOG.get(record.levelno, 6)}>"
+        return "\n".join(prefix + line for line in super().format(record).split("\n"))
+
 
 # Console handler
 _console_handler = logging.StreamHandler()
-_console_handler.setFormatter(_log_formatter)
+_console_handler.setFormatter(_SyslogPrefixFormatter(_FORMAT))
 logger.addHandler(_console_handler)
 
 _file_handler = None
