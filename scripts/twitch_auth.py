@@ -52,7 +52,9 @@ ACCOUNTS = {
                   # Get Broadcaster Subscriptions: the full subscriber list,
                   # including the ones who never speak. Chat badges only ever
                   # show subs who talk.
-                  "channel:read:subscriptions",
+                  "channel:read:subscriptions "
+                  # Create the song-queue reward and refund failed redemptions.
+                  "channel:manage:redemptions",
         "filename": ".twitch_tokens.json",
     },
     "bot": {

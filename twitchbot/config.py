@@ -31,6 +31,15 @@ REPORT_IGNORE = {BROADCASTER_LOGIN, BOT_LOGIN} | {
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
 SPOTIFY_REDIRECT_URI = os.getenv("SPOTIFY_REDIRECT_URI")
+# One scope string shared by the bot and scripts/spotify_auth.py — they must
+# match or spotipy discards the cached token and tries to re-auth headless.
+# modify-playback-state is for the channel-point song queue.
+SPOTIFY_SCOPE = ("user-read-currently-playing user-read-playback-state "
+                 "user-modify-playback-state")
+
+# The channel-point reward that queues a song (created by
+# scripts/create_song_reward.py, which appends the id here). Unset = feature off.
+SONG_REWARD_ID = os.getenv("SONG_REWARD_ID", "")
 
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
 

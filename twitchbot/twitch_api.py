@@ -369,6 +369,69 @@ async def get_user_id(login: str) -> str | None:
     return users[0]["id"] if users else None
 
 
+# ---- Channel-point rewards (song queue) ----
+# Twitch only lets the app that CREATED a reward see or update its
+# redemptions, which is why create_song_reward.py makes ours via the API
+# instead of the dashboard — that's what makes auto-refunds possible.
+
+_REWARDS_URL = "https://api.twitch.tv/helix/channel_points/custom_rewards"
+
+
+async def create_custom_reward(title: str, cost: int, prompt: str) -> str | None:
+    """Create (or find our existing) reward; returns its id."""
+    status, body = await _twitch_request(
+        "POST", f"{_REWARDS_URL}?broadcaster_id={BROADCASTER_ID}",
+        json={"title": title, "cost": cost, "prompt": prompt,
+              "is_user_input_required": True},
+    )
+    if status == 200:
+        return json.loads(body)["data"][0]["id"]
+    if status == 400 and "DUPLICATE_REWARD" in body:
+        # Already created on an earlier run — find it among our own rewards.
+        status, body = await _twitch_request(
+            "GET", f"{_REWARDS_URL}?broadcaster_id={BROADCASTER_ID}"
+                   "&only_manageable_rewards=true")
+        if status == 200:
+            for r in json.loads(body).get("data", []):
+                if r["title"] == title:
+                    return r["id"]
+    logger.error("Reward create failed. HTTP %s: %s", status, body)
+    return None
+
+
+async def find_redemption(reward_id: str, user_id: str) -> str | None:
+    """The user's most recent unfulfilled redemption of our reward.
+
+    Chat only carries the reward id, not the redemption id a refund needs,
+    so the redemption is looked up when its chat message arrives.
+    """
+    status, body = await _twitch_request(
+        "GET", f"{_REWARDS_URL}/redemptions?broadcaster_id={BROADCASTER_ID}"
+               f"&reward_id={reward_id}&status=UNFULFILLED&sort=NEWEST&first=50")
+    if status != 200:
+        logger.error("Redemption lookup failed. HTTP %s: %s", status, body)
+        return None
+    for r in json.loads(body).get("data", []):
+        if r.get("user_id") == user_id:
+            return r["id"]
+    return None
+
+
+async def resolve_redemption(reward_id: str, redemption_id: str,
+                             fulfilled: bool) -> bool:
+    """FULFILLED locks in the points; CANCELED refunds them."""
+    wanted = "FULFILLED" if fulfilled else "CANCELED"
+    status, body = await _twitch_request(
+        "PATCH", f"{_REWARDS_URL}/redemptions?broadcaster_id={BROADCASTER_ID}"
+                 f"&reward_id={reward_id}&id={redemption_id}",
+        json={"status": wanted},
+    )
+    if status != 200:
+        logger.error("Redemption %s -> %s failed. HTTP %s: %s",
+                     redemption_id, wanted, status, body)
+    return status == 200
+
+
 # App access token (client credentials) for the Helix chat send endpoint.
 # Twitch only shows the native chat-bot badge on messages sent this way — a
 # user token or IRC PRIVMSG gets no badge. App tokens have no refresh token;

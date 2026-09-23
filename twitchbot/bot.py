@@ -17,6 +17,8 @@ from .config import (
     CHAT_DB,
     CLIENT_ID,
     SPOTIFY_CLIENT_ID,
+    SPOTIFY_SCOPE,
+    SONG_REWARD_ID,
     SPOTIFY_CLIENT_SECRET,
     SPOTIFY_REDIRECT_URI,
     DISCORD_BOT_URL,
@@ -40,6 +42,8 @@ from .twitch_api import (
     get_chatters,
     get_new_followers,
     get_category_snapshot,
+    find_redemption,
+    resolve_redemption,
 )
 from .chatstore import ChatStore, parse_emotes
 from .helpers import leetcode_slug, resolve_problem_name
@@ -130,6 +134,8 @@ _LEETCODE_SUBMISSION_RE = re.compile(
 )
 
 _URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
+_SPOTIFY_TRACK_RE = re.compile(
+    r"(?:open\.spotify\.com/(?:intl-[a-z]+/)?track/|spotify:track:)([A-Za-z0-9]+)")
 _RECAP_SKIP_HOSTS = ("github.com", "leetcode.com", "discord.com", "discord.gg", "discordapp.com")
 
 # Twitch usernames the bot keys behavior off of. Update these on a rename.
@@ -190,12 +196,11 @@ class Bot(commands.Bot):
     # ---------------- SPOTIFY INIT ----------------
     def init_spotify(self):
         try:
-            scope = "user-read-currently-playing user-read-playback-state"
             self.spotify = spotipy.Spotify(auth_manager=SpotifyOAuth(
                 client_id=SPOTIFY_CLIENT_ID,
                 client_secret=SPOTIFY_CLIENT_SECRET,
                 redirect_uri=SPOTIFY_REDIRECT_URI,
-                scope=scope,
+                scope=SPOTIFY_SCOPE,
                 cache_path=".spotify_cache"
             ))
             logger.info("Spotify API initialized successfully.")
@@ -694,6 +699,14 @@ class Bot(commands.Bot):
 
         self._record_message(message)
 
+        # A channel-point song request arrives as a chat message tagged with
+        # the reward id (rewards requiring text input come through IRC; the
+        # redemption id for the refund is looked up over Helix).
+        if SONG_REWARD_ID and \
+                (message.tags or {}).get("custom-reward-id") == SONG_REWARD_ID:
+            asyncio.create_task(self._handle_song_request(message))
+            return   # it's a song title, not a command
+
         # Scan for LeetCode submission URLs from chatters
         if self.is_live:
             for match in _LEETCODE_SUBMISSION_RE.finditer(message.content):
@@ -728,6 +741,54 @@ class Bot(commands.Bot):
                 logger.info("[RECAP] Captured streamer link: %s", url)
 
         await self.handle_commands(message)
+
+    # ---------------- CHANNEL-POINT SONG REQUESTS ----------------
+    async def _handle_song_request(self, message) -> None:
+        """Queue the requested track, then settle the redemption: FULFILLED
+        locks the points in, CANCELED refunds them. If the redemption can't
+        be found (Helix hiccup) the points sit UNFULFILLED in the dashboard
+        queue rather than being silently eaten."""
+        user = message.author.name
+        ok, reply = await self._queue_song(message.content.strip())
+        try:
+            red_id = await find_redemption(
+                SONG_REWARD_ID, (message.tags or {}).get("user-id", ""))
+            settled = bool(red_id) and await resolve_redemption(
+                SONG_REWARD_ID, red_id, fulfilled=ok)
+        except Exception:
+            logger.exception("Redemption settle failed")
+            settled = False
+        if not ok and settled:
+            reply += " Points refunded."
+        logger.info("[SONG] %s: %r -> %s (settled=%s)",
+                    user, message.content, reply, settled)
+        await self._safe_send(f"@{user} {reply}")
+
+    async def _queue_song(self, text: str) -> tuple[bool, str]:
+        if not self.spotify:
+            return False, "Song queue is down (Spotify not connected)."
+        try:
+            if m := _SPOTIFY_TRACK_RE.search(text):
+                track = await asyncio.to_thread(self.spotify.track, m.group(1))
+            else:
+                found = await asyncio.to_thread(
+                    self.spotify.search, text, 1, 0, "track")
+                items = (found.get("tracks") or {}).get("items") or []
+                if not items:
+                    return False, f"Couldn't find \"{text}\" on Spotify."
+                track = items[0]
+            await asyncio.to_thread(self.spotify.add_to_queue, track["uri"])
+        except SpotifyException as e:
+            # 404 NO_ACTIVE_DEVICE: nothing is playing to queue onto.
+            if "NO_ACTIVE_DEVICE" in str(e) or e.http_status == 404:
+                return False, "Spotify isn't playing right now."
+            logger.exception("Spotify queue failed")
+            return False, "Spotify said no to that one."
+        except Exception:
+            logger.exception("Song request failed")
+            return False, "Something broke queueing that."
+        artists = ", ".join(a["name"] for a in track["artists"])
+        return True, f"Queued: {track['name']} — {artists}"
 
     def _record_message(self, message) -> None:
         try:
