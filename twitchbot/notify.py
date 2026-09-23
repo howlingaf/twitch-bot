@@ -44,6 +44,13 @@ async def stream_alert_vod(message_id: str, title: str, game: str,
         "vod_url": vod_url, "duration": duration}))
 
 
+async def stream_problems(vod_id: str, items: list[dict]) -> int:
+    """Tell the Discord bot which problems were solved on this stream, so
+    their posts can carry the Twitch tag and a link into the VOD."""
+    body = await _post("/stream-problems", {"vod_id": vod_id, "items": items})
+    return int((body or {}).get("marked") or 0)
+
+
 async def console_lines(text: str) -> bool:
     """Post a block of text into #twitch-bot-console (no ping) via the log relay."""
     return bool(await _post("/twitch-log", {"lines": text.split("\n")}))

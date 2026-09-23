@@ -43,7 +43,8 @@ from .twitch_api import (
 )
 from .chatstore import ChatStore, parse_emotes
 from .helpers import leetcode_slug, resolve_problem_name
-from .notify import alert_owner, stream_alert, stream_alert_vod
+from .notify import (alert_owner, stream_alert, stream_alert_vod,
+                     stream_problems as notify_stream_problems)
 
 # Ad cadence. The period is measured warning-to-warning, so a break lands at
 # the same point in every hour of a stream.
@@ -169,6 +170,9 @@ class Bot(commands.Bot):
         self.chatter_submissions: list[dict] = []
         self._seen_submissions: set[tuple[str, str]] = set()
         self.stream_problems: list[str] = []  # LeetCode slugs from !st commands
+        # Every problem named this stream, with how far into it: the Discord
+        # posts link back into the VOD at that point (see streamwork.py).
+        self.stream_problem_marks: list[dict] = []
         self.streamer_links: list[str] = []  # broadcaster-pasted non-skip URLs
         self._seen_streamer_links: set[str] = set()
         self.stream_title: str = ""  # heads the Discord recap embed
@@ -236,6 +240,7 @@ class Bot(commands.Bot):
                     self.chatter_submissions = []
                     self._seen_submissions = set()
                     self.stream_problems = []
+                    self.stream_problem_marks = []
                     self.streamer_links = []
                     self._seen_streamer_links = set()
 
@@ -517,11 +522,25 @@ class Bot(commands.Bot):
                     ok = await stream_alert_vod(message_id, title, game,
                                                 vod["url"], vod["duration"] or "")
                     logger.info("Go-live alert -> VOD card (%s): %s", vod["duration"], ok)
+                    await self._send_problem_marks(vod["url"])
                     return
             except Exception:
                 logger.exception("VOD lookup attempt %d failed", attempt)
             await asyncio.sleep(delay)
         logger.warning("No VOD matching %s appeared in ~16 min; alert left as-is.", started_at)
+
+    async def _send_problem_marks(self, vod_url: str) -> None:
+        """Hand the stream's problems to the Discord bot now that the VOD they
+        point into exists. Never lets a failure here affect the VOD card."""
+        marks, self.stream_problem_marks = self.stream_problem_marks, []
+        vod_id = vod_url.rstrip("/").rsplit("/", 1)[-1]
+        if not (marks and vod_id.isdigit()):
+            return
+        try:
+            marked = await notify_stream_problems(vod_id, marks)
+            logger.info("Problem posts tagged from this stream: %d of %d", marked, len(marks))
+        except Exception:
+            logger.exception("Sending this stream's problems to the Discord bot failed")
 
     async def _record_follows(self):
         """Store everyone who followed during the stream as a `follow` event.
@@ -1011,6 +1030,20 @@ class Bot(commands.Bot):
     # At or above this many minutes the timer also announces "10 minutes left".
     TEN_MIN_REMINDER_THRESHOLD = 25
 
+    def _mark_problem(self, url: str) -> None:
+        """Note a problem and when it was started, in seconds into the stream.
+        The first mention wins: re-opening one later should still link to
+        where the work on it began."""
+        if not (self.is_live and self.stream_start_ts):
+            return
+        if any(m["url"] == url for m in self.stream_problem_marks):
+            return
+        now = int(time.time())
+        self.stream_problem_marks.append(
+            {"url": url, "offset_s": max(0, now - self.stream_start_ts), "at": now})
+        logger.info("Problem marked for the VOD: %s (%ds in)", url,
+                    now - self.stream_start_ts)
+
     def clear_problem(self) -> bool:
         """Cancel any running timer and forget the current problem.
 
@@ -1050,6 +1083,8 @@ class Bot(commands.Bot):
             if problem_name is None:
                 problem_name = "Problem"
                 logger.info("!st unrecognized problem url %r — using generic label", url)
+
+            self._mark_problem(url)
 
             # Track LeetCode slugs for the recap. The recap pipeline is
             # LeetCode-specific, so other sites are timed but not recapped.
