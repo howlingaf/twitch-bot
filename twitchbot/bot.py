@@ -790,21 +790,6 @@ class Bot(commands.Bot):
         artists = ", ".join(a["name"] for a in track["artists"])
         return True, f"Queued: {track['name']} — {artists}"
 
-    async def skip_song(self) -> tuple[bool, str]:
-        """Skip to Spotify's next track (Stream Deck button). Silent in chat:
-        it's also used on the streamer's own playlist, and the overlay shows
-        the new track within a poll anyway."""
-        if not self.spotify:
-            return False, "Spotify not\nconnected"
-        try:
-            await asyncio.to_thread(self.spotify.next_track)
-            return True, "skipped"
-        except SpotifyException as e:
-            if "NO_ACTIVE_DEVICE" in str(e) or e.http_status == 404:
-                return False, "not\nplaying"
-            logger.exception("Skip failed")
-            return False, "skip\nfailed"
-
     def _record_message(self, message) -> None:
         try:
             tags = message.tags or {}
