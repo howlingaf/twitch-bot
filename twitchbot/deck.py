@@ -66,7 +66,15 @@ def make_deck_app(bot) -> web.Application:
         logger.info("Deck run-ad (%ss): %s", length, msg.replace("\n", " "))
         return web.Response(status=200 if ok else 409, text=msg)
 
+    async def skip_song(request: web.Request):
+        if not _authed(request):
+            return web.Response(status=401, text="unauthorized")
+        ok, msg = await bot.skip_song()
+        logger.info("Deck skip-song: %s", msg.replace("\n", " "))
+        return web.Response(status=200 if ok else 409, text=msg)
+
     app = web.Application()
     app.router.add_get("/ad-status", ad_status)
     app.router.add_route("*", "/run-ad", run_ad)
+    app.router.add_route("*", "/skip-song", skip_song)
     return app
