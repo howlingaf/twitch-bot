@@ -255,6 +255,8 @@ class Bot(commands.Bot):
                         await self._capture_stream_title()
                         self.alert_message_id = await stream_alert(self.stream_title, self.stream_game)
                         logger.info("Go-live alert posted: %s", self.alert_message_id)
+                        if self.alert_message_id and self.stream_id:
+                            self.store.set_alert_message(self.stream_id, self.alert_message_id)
                         self.ad_task = asyncio.create_task(
                             self._run_ad_loop(run_first_immediately=True)
                         )

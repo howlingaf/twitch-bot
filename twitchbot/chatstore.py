@@ -133,6 +133,9 @@ class ChatStore:
         if "leaders" not in {r[1] for r in self.db.execute("PRAGMA table_info(viewers)")}:
             self.db.execute("ALTER TABLE viewers ADD COLUMN leaders TEXT")
             logger.info("Chat store: added viewers.leaders")
+        if "alert_message_id" not in {r[1] for r in self.db.execute("PRAGMA table_info(streams)")}:
+            self.db.execute("ALTER TABLE streams ADD COLUMN alert_message_id TEXT")
+            logger.info("Chat store: added streams.alert_message_id")
         logger.info("Chat store open at %s", self.path)
 
     # -------- streams --------
@@ -143,6 +146,12 @@ class ChatStore:
             "ON CONFLICT(id) DO UPDATE SET title=excluded.title, game=excluded.game",
             (stream_id, started_at, title, game),
         )
+
+    def set_alert_message(self, stream_id: str, message_id: str) -> None:
+        """Remember the #streams post for this stream: the analytics app edits
+        the same message later, once the review names what was covered."""
+        self.db.execute("UPDATE streams SET alert_message_id = ? WHERE id = ?",
+                        (message_id, stream_id))
 
     def end_stream(self, stream_id: str, ended_at: str) -> None:
         self.db.execute(
