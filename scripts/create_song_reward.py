@@ -17,10 +17,10 @@ sys.path.insert(0, str(ROOT))
 from twitchbot import twitch_api  # noqa: E402
 
 REWARDS = [
-    ("SONG_REWARD_ID", "Track Review", 10_000,
+    ("SONG_REWARD_ID", "Track Review", 15_000,
      "Paste in a song link (Spotify / Apple Music / YouTube / Tidal) and "
      "I'll pull out the IEMs and give you a brutally honest review"),
-    ("ALBUM_REWARD_ID", "Album Review", 25_000,
+    ("ALBUM_REWARD_ID", "Album Review", 50_000,
      "Paste in an album link (Spotify / Apple Music / Tidal) and I'll pull "
      "out the IEMs and give you a brutally honest review"),
 ]
