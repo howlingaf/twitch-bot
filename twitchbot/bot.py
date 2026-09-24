@@ -19,6 +19,7 @@ from .config import (
     SPOTIFY_CLIENT_ID,
     SPOTIFY_SCOPE,
     SONG_REWARD_ID,
+    ALBUM_REWARD_ID,
     YOUTUBE_API_KEY,
     TIDAL_CLIENT_ID,
     TIDAL_CLIENT_SECRET,
@@ -144,6 +145,10 @@ _APPLE_TRACK_RE = re.compile(
 _YOUTUBE_RE = re.compile(
     r"(?:youtu\.be/|youtube\.com/(?:watch\?\S*?v=|shorts/))([\w-]{11})")
 _TIDAL_RE = re.compile(r"tidal\.com/(?:browse/)?track/(\d+)")
+_SPOTIFY_ALBUM_RE = re.compile(
+    r"(?:open\.spotify\.com/(?:intl-[a-z]+/)?album/|spotify:album:)([A-Za-z0-9]+)")
+_APPLE_ALBUM_RE = re.compile(r"music\.apple\.com/\S*?/album/[^/\s]+/(\d+)")
+_TIDAL_ALBUM_RE = re.compile(r"tidal\.com/(?:browse/)?album/(\d+)")
 # Bracketed video-title junk that isn't part of the song's name. Version
 # qualifiers like (Remix) or (Sped Up) are deliberately NOT matched — they're
 # exactly what must survive into the Spotify search.
@@ -721,10 +726,15 @@ class Bot(commands.Bot):
         # A channel-point song request arrives as a chat message tagged with
         # the reward id (rewards requiring text input come through IRC; the
         # redemption id for the refund is looked up over Helix).
-        if SONG_REWARD_ID and \
-                (message.tags or {}).get("custom-reward-id") == SONG_REWARD_ID:
-            asyncio.create_task(self._handle_song_request(message))
-            return   # it's a song title, not a command
+        reward = (message.tags or {}).get("custom-reward-id")
+        if reward and reward == SONG_REWARD_ID:
+            asyncio.create_task(self._handle_redemption(
+                message, SONG_REWARD_ID, self._queue_song, "SONG"))
+            return   # it's a song link, not a command
+        if reward and reward == ALBUM_REWARD_ID:
+            asyncio.create_task(self._handle_redemption(
+                message, ALBUM_REWARD_ID, self._queue_album, "ALBUM"))
+            return
 
         # Scan for LeetCode submission URLs from chatters
         if self.is_live:
@@ -761,30 +771,31 @@ class Bot(commands.Bot):
 
         await self.handle_commands(message)
 
-    # ---------------- CHANNEL-POINT SONG REQUESTS ----------------
-    async def _handle_song_request(self, message) -> None:
-        """Queue the requested track, then settle the redemption: FULFILLED
-        locks the points in, CANCELED refunds them. If the redemption can't
-        be found (Helix hiccup) the points sit UNFULFILLED in the dashboard
-        queue rather than being silently eaten."""
+    # ---------------- CHANNEL-POINT SONG/ALBUM REQUESTS ----------------
+    async def _handle_redemption(self, message, reward_id: str,
+                                 queue_fn, label: str) -> None:
+        """Run a queueing redemption, then settle it: FULFILLED locks the
+        points in, CANCELED refunds them. If the redemption can't be found
+        (Helix hiccup) the points sit UNFULFILLED in the dashboard queue
+        rather than being silently eaten."""
         user = message.author.name
-        # The pasted link is noise once handled; the bot's reply names the
-        # song. Fire-and-forget so a slow delete never delays the queueing.
+        # The pasted link is noise once handled; the bot's reply names what
+        # got queued. Fire-and-forget so a slow delete never delays it.
         if message.id:
             asyncio.create_task(delete_chat_message(message.id))
-        ok, reply = await self._queue_song(message.content.strip())
+        ok, reply = await queue_fn(message.content.strip())
         try:
             red_id = await find_redemption(
-                SONG_REWARD_ID, (message.tags or {}).get("user-id", ""))
+                reward_id, (message.tags or {}).get("user-id", ""))
             settled = bool(red_id) and await resolve_redemption(
-                SONG_REWARD_ID, red_id, fulfilled=ok)
+                reward_id, red_id, fulfilled=ok)
         except Exception:
             logger.exception("Redemption settle failed")
             settled = False
         if not ok and settled:
             reply += " Points refunded."
-        logger.info("[SONG] %s: %r -> %s (settled=%s)",
-                    user, message.content, reply, settled)
+        logger.info("[%s] %s: %r -> %s (settled=%s)",
+                    label, user, message.content, reply, settled)
         await self._safe_send(f"@{user} {reply}")
 
     async def _apple_track(self, apple_id: str) -> tuple[str, str, int] | None:
@@ -837,11 +848,11 @@ class Bot(commands.Bot):
             return song.strip(), artist.strip(), ms
         return title, channel, ms
 
-    async def _tidal_track(self, track_id: str) -> tuple[str, str] | None:
-        """(title, isrc) from Tidal's developer API. The ISRC identifies the
-        exact recording, so the Spotify match can't hit the wrong version."""
+    async def _tidal_attrs(self, resource: str, rid: str) -> dict:
+        """Attributes of one Tidal catalog object (tracks/albums), {} on
+        any failure. Handles the client-credentials token dance."""
         if not (TIDAL_CLIENT_ID and TIDAL_CLIENT_SECRET):
-            return None
+            return {}
         try:
             async with aiohttp.ClientSession(
                     timeout=aiohttp.ClientTimeout(total=10)) as session:
@@ -855,17 +866,146 @@ class Bot(commands.Bot):
                     self._tidal_token = tok.get("access_token", "")
                     self._tidal_token_exp = time.time() + tok.get("expires_in", 0) - 60
                 async with session.get(
-                        f"https://openapi.tidal.com/v2/tracks/{track_id}",
+                        f"https://openapi.tidal.com/v2/{resource}/{rid}",
                         params={"countryCode": "US"},
                         headers={"Authorization": f"Bearer {self._tidal_token}",
                                  "Accept": "application/vnd.api+json"}) as r:
                     data = (await r.json(content_type=None)).get("data") or {}
-            attrs = data.get("attributes") or {}
-            if attrs.get("isrc"):
-                return attrs.get("title", "?"), attrs["isrc"]
+            return data.get("attributes") or {}
         except Exception:
-            logger.exception("Tidal lookup failed for %s", track_id)
+            logger.exception("Tidal lookup failed for %s/%s", resource, rid)
+            return {}
+
+    async def _tidal_track(self, track_id: str) -> tuple[str, str] | None:
+        """(title, isrc). The ISRC identifies the exact recording, so the
+        Spotify match can't hit the wrong version."""
+        attrs = await self._tidal_attrs("tracks", track_id)
+        if attrs.get("isrc"):
+            return attrs.get("title", "?"), attrs["isrc"]
         return None
+
+    async def _tidal_album(self, album_id: str) -> tuple[str, str, int] | None:
+        """(title, upc, track_count). The UPC barcode is to an album what
+        the ISRC is to a track — but old catalog entries carry placeholder
+        barcodes (all zeros), which Spotify "matches" to junk releases that
+        share the placeholder, so it comes back "" when it can't be trusted."""
+        attrs = await self._tidal_attrs("albums", album_id)
+        if not attrs.get("title"):
+            return None
+        upc = attrs.get("barcodeId") or ""
+        if not upc.strip("0"):
+            upc = ""
+        return attrs["title"], upc, attrs.get("numberOfItems") or 0
+
+    async def _apple_album(self, album_id: str) -> tuple[str, str, int] | None:
+        """(title, artist, track_count) for an Apple Music album id."""
+        try:
+            async with aiohttp.ClientSession(
+                    timeout=aiohttp.ClientTimeout(total=10)) as session:
+                async with session.get("https://itunes.apple.com/lookup",
+                                       params={"id": album_id}) as r:
+                    results = (await r.json(content_type=None)).get("results", [])
+        except Exception:
+            logger.exception("iTunes album lookup failed for %s", album_id)
+            return None
+        for entry in results:
+            if entry.get("collectionType") == "Album":
+                return (entry["collectionName"], entry["artistName"],
+                        entry.get("trackCount") or 0)
+        return None
+
+    async def _queue_album(self, text: str) -> tuple[bool, str]:
+        """Queue every track of an album, in order. Albums come from
+        Spotify links directly, Tidal by UPC (exact), Apple by
+        name/artist with a track-count tie-break. No YouTube: album
+        playlists there are too messy to resolve reliably."""
+        if not self.spotify:
+            return False, "Song queue is down (Spotify not connected)."
+        album, queued = None, 0
+        try:
+            if m := _SPOTIFY_ALBUM_RE.search(text):
+                album = await asyncio.to_thread(self.spotify.album, m.group(1))
+            elif m := _TIDAL_ALBUM_RE.search(text):
+                if not (TIDAL_CLIENT_ID and TIDAL_CLIENT_SECRET):
+                    return False, "Tidal links aren't set up yet — use another link."
+                info = await self._tidal_album(m.group(1))
+                if not info:
+                    return False, "Couldn't read that Tidal album link."
+                title, upc, n_tracks = info
+
+                def norm(x): return re.sub(r"[^a-z0-9]", "", x.lower())
+                best = None
+                # Spotify's upc: filter is an exact string match and catalogs
+                # disagree about leading zeros (GTIN-12/13/14), so try the
+                # padded variants until one sticks.
+                variants = list(dict.fromkeys(
+                    [upc, upc.lstrip("0")] +
+                    [upc.lstrip("0").zfill(n) for n in (12, 13, 14)]
+                )) if upc else []
+                for variant in variants:
+                    found = await asyncio.to_thread(
+                        self.spotify.search, f"upc:{variant}", 1, 0, "album")
+                    items = (found.get("albums") or {}).get("items") or []
+                    # A UPC hit that shares neither name nor size is a
+                    # placeholder-barcode collision, not a match.
+                    if items and (norm(items[0]["name"]) == norm(title)
+                                  or abs((items[0].get("total_tracks") or 0)
+                                         - n_tracks) <= 3):
+                        best = items[0]
+                        break
+                if not best:
+                    found = await asyncio.to_thread(
+                        self.spotify.search, f'album:"{title}"', 5, 0, "album")
+                    items = (found.get("albums") or {}).get("items") or []
+                    if items:
+                        best = min(items, key=lambda a: abs(
+                            (a.get("total_tracks") or 0) - n_tracks))
+                if not best:
+                    return False, f"{title} isn't on Spotify."
+                album = await asyncio.to_thread(self.spotify.album, best["id"])
+            elif m := _APPLE_ALBUM_RE.search(text):
+                info = await self._apple_album(m.group(1))
+                if not info:
+                    return False, "Couldn't read that Apple Music album link."
+                title, artist, n_tracks = info
+                found = await asyncio.to_thread(
+                    self.spotify.search,
+                    f'album:"{title}" artist:"{artist}"', 5, 0, "album")
+                items = (found.get("albums") or {}).get("items") or []
+                if not items:
+                    return False, f"{title} — {artist} isn't on Spotify."
+                # Same album, same track count — separates deluxe/standard.
+                best = min(items, key=lambda a: abs(
+                    (a.get("total_tracks") or 0) - n_tracks))
+                album = await asyncio.to_thread(self.spotify.album, best["id"])
+            else:
+                return False, ("Paste an album link from Spotify, Apple "
+                               "Music, or Tidal.")
+
+            tracks = []
+            page = album["tracks"]
+            while page:
+                tracks += page["items"]
+                page = await asyncio.to_thread(self.spotify.next, page) \
+                    if page.get("next") else None
+            for t in tracks:
+                await asyncio.to_thread(self.spotify.add_to_queue, t["uri"])
+                queued += 1
+        except SpotifyException as e:
+            if "NO_ACTIVE_DEVICE" in str(e):
+                if queued:
+                    # Device died mid-album: most of it made it, keep the
+                    # points rather than refund a mostly-delivered album.
+                    return True, (f"Queued {queued} tracks of "
+                                  f"{album['name']}, then Spotify stopped responding.")
+                return False, "Spotify isn't playing right now."
+            logger.exception("Album queue failed")
+            return False, "Couldn't load that album from Spotify."
+        except Exception:
+            logger.exception("Album request failed")
+            return False, "Something broke queueing that."
+        artists = ", ".join(a["name"] for a in album["artists"])
+        return True, f"Queued album: {album['name']} — {artists} ({queued} tracks)"
 
     async def _spotify_first(self, query: str):
         found = await asyncio.to_thread(self.spotify.search, query, 1, 0, "track")

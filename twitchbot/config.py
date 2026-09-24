@@ -37,9 +37,10 @@ SPOTIFY_REDIRECT_URI = os.getenv("SPOTIFY_REDIRECT_URI")
 SPOTIFY_SCOPE = ("user-read-currently-playing user-read-playback-state "
                  "user-modify-playback-state")
 
-# The channel-point reward that queues a song (created by
-# scripts/create_song_reward.py, which appends the id here). Unset = feature off.
+# The channel-point rewards that queue a song / a whole album (created by
+# scripts/create_song_reward.py, which appends the ids here). Unset = off.
 SONG_REWARD_ID = os.getenv("SONG_REWARD_ID", "")
+ALBUM_REWARD_ID = os.getenv("ALBUM_REWARD_ID", "")
 
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
 
