@@ -25,9 +25,9 @@ REWARDS = [
      "as it and theme the whole stream around it. The biggest reward there "
      "is."),
     ("BOOK_REWARD_ID", "Book Review", 100_000,
-     "Any book — put the title & author in the text. I may reject and "
-     "refund if it's not for me. You get a formal write-up, or we discuss "
-     "it on/off stream — your pick."),
+     "Paste an Amazon link to the book (amazon.com/dp/...). I may reject "
+     "& refund if it's not for me. Formal write-up or we discuss it "
+     "on/off stream — your pick."),
     ("ALBUM_REWARD_ID", "Album Review", 50_000,
      "Paste in an album link (Spotify / Apple Music / Tidal) and I'll pull "
      "out the IEMs and give you a brutally honest review"),

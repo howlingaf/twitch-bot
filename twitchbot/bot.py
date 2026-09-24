@@ -1,4 +1,6 @@
 import asyncio
+import json
+import os
 import logging
 import re
 import time
@@ -148,6 +150,9 @@ _APPLE_TRACK_RE = re.compile(
 _YOUTUBE_RE = re.compile(
     r"(?:youtu\.be/|youtube\.com/(?:watch\?\S*?v=|shorts/))([\w-]{11})")
 _TIDAL_RE = re.compile(r"tidal\.com/(?:browse/)?track/(\d+)")
+_AMAZON_ASIN_RE = re.compile(
+    r"amazon\.[a-z.]{2,10}/(?:[^/\s]+/)?(?:dp|gp/product|gp/aw/d)/([A-Z0-9]{10})")
+_AMZN_SHORT_RE = re.compile(r"https?://(?:amzn\.(?:to|eu|asia)|a\.co)/\S+")
 _SPOTIFY_ALBUM_RE = re.compile(
     r"(?:open\.spotify\.com/(?:intl-[a-z]+/)?album/|spotify:album:)([A-Za-z0-9]+)")
 _APPLE_ALBUM_RE = re.compile(r"music\.apple\.com/\S*?/album/[^/\s]+/(\d+)")
@@ -763,13 +768,14 @@ class Bot(commands.Bot):
             asyncio.create_task(self._handle_manual_request(
                 message, "BOOK", "Book review request received! I'll "
                 "confirm it soon — then it's a formal write-up or we talk "
-                "it through on/off stream, your pick."))
+                "it through on/off stream, your pick.",
+                BOOK_REWARD_ID, self._validate_book))
             return
         if reward and reward == PNG_REWARD_ID:
             asyncio.create_task(self._handle_manual_request(
                 message, "PNG", "PNG Takeover request received! If the "
                 "image clears review, I become the PNG and the stream "
-                "follows 👀"))
+                "follows 👀", PNG_REWARD_ID, self._validate_png))
             return
 
         # Scan for LeetCode submission URLs from chatters
@@ -807,15 +813,129 @@ class Bot(commands.Bot):
 
         await self.handle_commands(message)
 
-    async def _handle_manual_request(self, message, label: str, ack: str) -> None:
-        """Rewards a human has to judge (books, PNG takeovers). No
-        automation, on purpose: the redemption stays UNFULFILLED so it
+    async def _settle(self, reward_id: str, user_id: str, fulfilled: bool) -> bool:
+        """Resolve a redemption over Helix; False if it couldn't be found."""
+        try:
+            red_id = await find_redemption(reward_id, user_id)
+            return bool(red_id) and await resolve_redemption(
+                reward_id, red_id, fulfilled=fulfilled)
+        except Exception:
+            logger.exception("Redemption settle failed")
+            return False
+
+    async def _validate_book(self, text: str) -> tuple[bool, str]:
+        """A book request must carry an Amazon product link. Short links
+        (amzn.to / a.co) are followed to the real product URL first."""
+        m = _URL_RE.search(text)
+        url = m.group(0).rstrip(".,!?);]>'\"") if m else ""
+        if url and _AMZN_SHORT_RE.match(url):
+            try:
+                async with aiohttp.ClientSession(
+                        timeout=aiohttp.ClientTimeout(total=10)) as session:
+                    async with session.get(
+                            url, allow_redirects=True,
+                            headers={"User-Agent": "Mozilla/5.0"}) as r:
+                        url = str(r.url)
+            except Exception:
+                logger.warning("Couldn't resolve short link %s", url)
+        if not url or not _AMAZON_ASIN_RE.search(url):
+            return False, ("Paste an Amazon link to the book "
+                           "(amazon.com/dp/... or an amzn.to short link).")
+        return True, ""
+
+    # The API caps images at 5MB; anything bigger can't be screened anyway.
+    PNG_MAX_BYTES = 4_500_000
+
+    async def _validate_png(self, text: str) -> tuple[bool, str]:
+        """A takeover request must link a real PNG, small enough to screen,
+        and — when an Anthropic key is configured — pass an AI content
+        check. AI trouble fails open to the human queue, never to auto-
+        refund: the broadcaster reviews everything that gets this far."""
+        m = _URL_RE.search(text)
+        if not m:
+            return False, ("Link the PNG image directly (right-click the "
+                           "image -> copy image address).")
+        url = m.group(0).rstrip(".,!?);]>'\"")
+        try:
+            async with aiohttp.ClientSession(
+                    timeout=aiohttp.ClientTimeout(total=15)) as session:
+                async with session.get(
+                        url, headers={"User-Agent": "Mozilla/5.0"}) as r:
+                    data = await r.content.read(self.PNG_MAX_BYTES + 1)
+        except Exception:
+            return False, "Couldn't fetch that link."
+        if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+            return False, ("That link isn't a PNG file — link the image "
+                           "itself, not the page it's on.")
+        if len(data) > self.PNG_MAX_BYTES:
+            return False, "That PNG is huge — keep it under ~4MB."
+        return await self._screen_image(data)
+
+    async def _screen_image(self, png: bytes) -> tuple[bool, str]:
+        """Claude looks at the PNG before the broadcaster does. A refusal to
+        even analyze it is treated as a failed screen — that only happens
+        for content that's disqualifying anyway."""
+        if not os.getenv("ANTHROPIC_API_KEY"):
+            logger.info("[PNG] no ANTHROPIC_API_KEY; skipping AI screen.")
+            return True, ""
+        try:
+            import anthropic
+            import base64
+            client = anthropic.AsyncAnthropic()
+            response = await client.messages.create(
+                model="claude-opus-5",
+                max_tokens=400,
+                messages=[{"role": "user", "content": [
+                    {"type": "image", "source": {
+                        "type": "base64", "media_type": "image/png",
+                        "data": base64.standard_b64encode(png).decode()}},
+                    {"type": "text", "text":
+                        "A Twitch viewer submitted this image; if accepted, "
+                        "the streamer will wear it as their on-stream avatar "
+                        "and theme the stream around it. Reject sexual or "
+                        "suggestive content, nudity, gore, graphic violence, "
+                        "hate symbols or extremist imagery, harassment of a "
+                        "real person, drug imagery, and anything else that "
+                        "would break Twitch's Terms of Service. When unsure, "
+                        "reject. Respond with ONLY JSON: "
+                        '{"ok": true|false, "reason": "<short reason>"}'},
+                ]}],
+            )
+            if response.stop_reason == "refusal":
+                return False, "The image didn't pass content screening."
+            verdict = json.loads(re.search(
+                r"\{.*\}", "".join(
+                    b.text for b in response.content if b.type == "text"),
+                re.DOTALL).group(0))
+            logger.info("[PNG] AI screen: %s", verdict)
+            if not verdict.get("ok"):
+                return False, "The image didn't pass content screening."
+        except Exception:
+            logger.exception("AI image screen failed; leaving it to the queue")
+        return True, ""
+
+    async def _handle_manual_request(self, message, label: str, ack: str,
+                                     reward_id: str, validator=None) -> None:
+        """Rewards a human has to judge (books, PNG takeovers). The
+        validator only screens out mechanically broken submissions (not an
+        Amazon link, not a PNG, fails the AI content check) with an
+        immediate refund. Everything that passes stays UNFULFILLED so it
         lands in the dashboard's Rewards Requests queue, where accepting
-        locks the points in and rejecting refunds them — that call is the
-        broadcaster's to make, not the bot's. This just makes sure a
-        request is never missed, and tells the viewer what happens next."""
+        locks the points in and rejecting refunds them — that judgment is
+        the broadcaster's, not the bot's."""
         user = message.author.name
         logger.info("[%s] %s requested: %r", label, user, message.content)
+        if validator:
+            ok, why = await validator(message.content.strip())
+            if not ok:
+                settled = await self._settle(
+                    reward_id, (message.tags or {}).get("user-id", ""),
+                    fulfilled=False)
+                if settled:
+                    why += " Points refunded."
+                logger.info("[%s] rejected: %s (settled=%s)", label, why, settled)
+                await self._safe_send(f"@{user} {why}")
+                return
         await console_lines(
             f"{'📚' if label == 'BOOK' else '🖼️'} {label.title()} request "
             f"from {user}: {message.content}\n"
@@ -889,14 +1009,8 @@ class Bot(commands.Bot):
         if message.id:
             asyncio.create_task(delete_chat_message(message.id))
         ok, reply = await queue_fn(message.content.strip())
-        try:
-            red_id = await find_redemption(
-                reward_id, (message.tags or {}).get("user-id", ""))
-            settled = bool(red_id) and await resolve_redemption(
-                reward_id, red_id, fulfilled=ok)
-        except Exception:
-            logger.exception("Redemption settle failed")
-            settled = False
+        settled = await self._settle(
+            reward_id, (message.tags or {}).get("user-id", ""), fulfilled=ok)
         if not ok and settled:
             reply += " Points refunded."
         logger.info("[%s] %s: %r -> %s (settled=%s)",

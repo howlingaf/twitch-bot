@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "aiohttp>=3.12.15",
+    "anthropic>=1.8.0",
     "beautifulsoup4>=4.13.5",
     "dotenv>=0.9.9",
     "python-dotenv>=1.1.1",
