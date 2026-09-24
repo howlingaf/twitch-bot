@@ -54,7 +54,9 @@ ACCOUNTS = {
                   # show subs who talk.
                   "channel:read:subscriptions "
                   # Create the song-queue reward and refund failed redemptions.
-                  "channel:manage:redemptions",
+                  "channel:manage:redemptions "
+                  # Delete the pasted link from chat after a song request.
+                  "moderator:manage:chat_messages",
         "filename": ".twitch_tokens.json",
     },
     "bot": {

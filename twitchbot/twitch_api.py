@@ -432,6 +432,20 @@ async def resolve_redemption(reward_id: str, redemption_id: str,
     return status == 200
 
 
+async def delete_chat_message(message_id: str) -> bool:
+    """Remove one message from chat (used to clean up song-request links).
+    Twitch refuses deletions of the broadcaster's or a moderator's messages,
+    so those requests keep their link visible — harmless."""
+    status, body = await _twitch_request(
+        "DELETE",
+        "https://api.twitch.tv/helix/moderation/chat"
+        f"?broadcaster_id={BROADCASTER_ID}&moderator_id={BROADCASTER_ID}"
+        f"&message_id={message_id}")
+    if status != 204:
+        logger.warning("Chat delete failed (HTTP %s): %s", status, body[:120])
+    return status == 204
+
+
 # App access token (client credentials) for the Helix chat send endpoint.
 # Twitch only shows the native chat-bot badge on messages sent this way — a
 # user token or IRC PRIVMSG gets no badge. App tokens have no refresh token;

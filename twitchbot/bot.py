@@ -47,6 +47,7 @@ from .twitch_api import (
     get_category_snapshot,
     find_redemption,
     resolve_redemption,
+    delete_chat_message,
 )
 from .chatstore import ChatStore, parse_emotes
 from .helpers import leetcode_slug, resolve_problem_name
@@ -767,6 +768,10 @@ class Bot(commands.Bot):
         be found (Helix hiccup) the points sit UNFULFILLED in the dashboard
         queue rather than being silently eaten."""
         user = message.author.name
+        # The pasted link is noise once handled; the bot's reply names the
+        # song. Fire-and-forget so a slow delete never delays the queueing.
+        if message.id:
+            asyncio.create_task(delete_chat_message(message.id))
         ok, reply = await self._queue_song(message.content.strip())
         try:
             red_id = await find_redemption(
