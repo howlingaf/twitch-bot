@@ -18,8 +18,8 @@ from twitchbot import twitch_api  # noqa: E402
 
 REWARDS = [
     ("SONG_REWARD_ID", "Track Review", 10_000,
-     "Paste in a track link (Spotify / Apple Music / YouTube / Tidal) and "
-     "I'll give you a brutally honest review"),
+     "Paste in a song link (Spotify / Apple Music / YouTube / Tidal) and "
+     "I'll pull out the IEMs and give you a brutally honest review"),
     ("ALBUM_REWARD_ID", "Queue a whole album", 25_000,
      "Paste an album link (Spotify / Apple Music / Tidal) — every track "
      "queues next on the stream's Spotify. Auto-refunded if it can't be "
