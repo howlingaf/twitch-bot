@@ -56,6 +56,12 @@ async def console_lines(text: str) -> bool:
     return bool(await _post("/twitch-log", {"lines": text.split("\n")}))
 
 
+async def review_lock(locked: bool) -> bool:
+    """Lock/unlock the Discord #on-stream voice channel while a redeemed
+    Track/Album Review is playing."""
+    return bool(await _post("/review-lock", {"locked": locked}))
+
+
 async def alert_owner(message: str) -> bool:
     """Ping the owner in the console channel. Best effort, like everything here."""
     return bool(await _post("/alert", {"message": message}))

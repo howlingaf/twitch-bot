@@ -53,7 +53,7 @@ from .twitch_api import (
 )
 from .chatstore import ChatStore, parse_emotes
 from .helpers import leetcode_slug, resolve_problem_name
-from .notify import (alert_owner, stream_alert, stream_alert_vod,
+from .notify import (alert_owner, review_lock, stream_alert, stream_alert_vod,
                      stream_problems as notify_stream_problems)
 
 # Ad cadence. The period is measured warning-to-warning, so a break lands at
@@ -218,6 +218,11 @@ class Bot(commands.Bot):
         self.spotify_playing = False
         self._not_playing_polls = 0
         self._rewards_paused = False   # assume live; first sync corrects
+        # Track ids queued by review redemptions: the moment one is playing,
+        # Discord's #on-stream locks; it unlocks when review music ends.
+        self._review_pending: set[str] = set()
+        self._review_current: str | None = None
+        self._review_locked = False
 
         self.init_spotify()
 
@@ -414,6 +419,8 @@ class Bot(commands.Bot):
 
                     playing = bool(data and data.get("is_playing") and data.get("item"))
                     await self._sync_request_rewards(playing)
+                    await self._sync_review_lock(
+                        data["item"].get("id") if playing else None)
                     if playing:
                         item = data["item"]
                         track_id = item.get("id")
@@ -505,6 +512,11 @@ class Bot(commands.Bot):
         # pause them with the stream (skip the hysteresis, this isn't a blip).
         self._not_playing_polls = self.REWARD_PAUSE_AFTER_POLLS
         await self._sync_request_rewards(False)
+        self._review_pending.clear()
+        if self._review_locked:
+            self._review_locked = False
+            self._review_current = None
+            await review_lock(False)
         self.store.end_stream(self.stream_id, _now_iso())
         await self._send_recap()
         # Follows arrive by polling, not chat; record them for the report on
@@ -787,6 +799,31 @@ class Bot(commands.Bot):
     # immediate so requests reopen the moment music does.
     REWARD_PAUSE_AFTER_POLLS = 3
 
+    async def _sync_review_lock(self, track_id: str | None) -> None:
+        """Lock #on-stream exactly while redeemed review music plays.
+
+        A pending review track starting -> lock. Consecutive review tracks
+        (an album, or back-to-back requests) keep it locked. Any other
+        track -> unlock. Nothing playing gets the same hysteresis as the
+        reward pause, so a fumbled pause mid-review doesn't flap the door.
+        """
+        if track_id and track_id in self._review_pending:
+            self._review_pending.discard(track_id)
+            self._review_current = track_id
+            if not self._review_locked and await review_lock(True):
+                self._review_locked = True
+                logger.info("[REVIEW] #on-stream locked (review playing).")
+            return
+        if not self._review_locked or track_id == self._review_current:
+            return
+        if track_id is None and \
+                self._not_playing_polls < self.REWARD_PAUSE_AFTER_POLLS:
+            return
+        if await review_lock(False):
+            self._review_locked = False
+            self._review_current = None
+            logger.info("[REVIEW] #on-stream unlocked (review over).")
+
     async def _sync_request_rewards(self, playing: bool) -> None:
         """Grey the song/album rewards out whenever music isn't playing —
         no music means mic time, and requests shouldn't queue (or charge)
@@ -1032,6 +1069,8 @@ class Bot(commands.Bot):
             for t in tracks:
                 await asyncio.to_thread(self.spotify.add_to_queue, t["uri"])
                 queued += 1
+                if t.get("id"):
+                    self._review_pending.add(t["id"])
         except SpotifyException as e:
             if "NO_ACTIVE_DEVICE" in str(e):
                 if queued:
@@ -1138,6 +1177,8 @@ class Bot(commands.Bot):
                 return False, ("Paste a track link from Spotify, Apple Music, "
                                "YouTube, or Tidal.")
             await asyncio.to_thread(self.spotify.add_to_queue, track["uri"])
+            if track.get("id"):
+                self._review_pending.add(track["id"])
         except SpotifyException as e:
             # 404 NO_ACTIVE_DEVICE: nothing is playing to queue onto.
             if "NO_ACTIVE_DEVICE" in str(e) or e.http_status == 404:
