@@ -846,14 +846,40 @@ class Bot(commands.Bot):
     # The API caps images at 5MB; anything bigger can't be screened anyway.
     PNG_MAX_BYTES = 4_500_000
 
+    @staticmethod
+    def _image_type(data: bytes) -> str | None:
+        """Media type from magic bytes — the formats the screening API
+        accepts. Viewers paste whatever Google Images or imgur hands them,
+        so the file's real format decides, not the URL's extension."""
+        if data.startswith(b"\x89PNG\r\n\x1a\n"):
+            return "image/png"
+        if data.startswith(b"\xff\xd8\xff"):
+            return "image/jpeg"
+        if data[:6] in (b"GIF87a", b"GIF89a"):
+            return "image/gif"
+        if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+            return "image/webp"
+        return None
+
+    @staticmethod
+    def _truncation_hint(text: str) -> str:
+        """Twitch cuts redemption text at 500 chars; a tokenized CDN URL
+        (DeviantArt/wixmp style) dies exactly this way."""
+        if len(text) >= 490:
+            return (" Your link got cut off — Twitch caps the message at 500 "
+                    "characters. Upload the image to imgur and paste the "
+                    "short direct link.")
+        return ""
+
     async def _validate_png(self, text: str) -> tuple[bool, str]:
-        """A takeover request must link a real PNG, small enough to screen,
-        and — when an Anthropic key is configured — pass an AI content
-        check. AI trouble fails open to the human queue, never to auto-
-        refund: the broadcaster reviews everything that gets this far."""
+        """A takeover request must link a real image (PNG/JPEG/WebP/GIF),
+        small enough to screen, and — when an Anthropic key is configured —
+        pass an AI content check. AI trouble fails open to the human queue,
+        never to auto-refund: the broadcaster reviews everything that gets
+        this far."""
         m = _URL_RE.search(text)
         if not m:
-            return False, ("Link the PNG image directly (right-click the "
+            return False, ("Link the image directly (right-click the "
                            "image -> copy image address).")
         url = m.group(0).rstrip(".,!?);]>'\"")
         try:
@@ -867,15 +893,20 @@ class Bot(commands.Bot):
                     async for chunk in r.content.iter_chunked(1 << 16):
                         data += chunk
                         if len(data) > self.PNG_MAX_BYTES:
-                            return False, "That PNG is huge — keep it under ~4MB."
+                            return False, "That image is huge — keep it under ~4MB."
         except Exception:
-            return False, "Couldn't fetch that link."
-        if not data.startswith(b"\x89PNG\r\n\x1a\n"):
-            return False, ("That link isn't a PNG file — link the image "
-                           "itself, not the page it's on.")
-        return await self._screen_image(data)
+            return False, "Couldn't fetch that link." + self._truncation_hint(text)
+        media_type = self._image_type(data)
+        if not media_type:
+            return False, ("That link isn't an image file — link the image "
+                           "itself, not the page it's on."
+                           + (self._truncation_hint(text)
+                              or " Uploading to imgur and pasting the direct "
+                                "link works best."))
+        return await self._screen_image(data, media_type)
 
-    async def _screen_image(self, png: bytes) -> tuple[bool, str]:
+    async def _screen_image(self, png: bytes,
+                            media_type: str = "image/png") -> tuple[bool, str]:
         """Claude looks at the PNG before the broadcaster does. A refusal to
         even analyze it is treated as a failed screen — that only happens
         for content that's disqualifying anyway."""
@@ -891,7 +922,7 @@ class Bot(commands.Bot):
                 max_tokens=400,
                 messages=[{"role": "user", "content": [
                     {"type": "image", "source": {
-                        "type": "base64", "media_type": "image/png",
+                        "type": "base64", "media_type": media_type,
                         "data": base64.standard_b64encode(png).decode()}},
                     {"type": "text", "text":
                         "A Twitch viewer submitted this image; if accepted, "
