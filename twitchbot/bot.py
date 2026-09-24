@@ -49,6 +49,7 @@ from .twitch_api import (
     find_redemption,
     resolve_redemption,
     delete_chat_message,
+    set_reward_paused,
 )
 from .chatstore import ChatStore, parse_emotes
 from .helpers import leetcode_slug, resolve_problem_name
@@ -214,6 +215,9 @@ class Bot(commands.Bot):
 
         self._tidal_token = ""
         self._tidal_token_exp = 0.0
+        self.spotify_playing = False
+        self._not_playing_polls = 0
+        self._rewards_paused = False   # assume live; first sync corrects
 
         self.init_spotify()
 
@@ -408,7 +412,9 @@ class Bot(commands.Bot):
 
                     data = await asyncio.to_thread(self.spotify.current_playback)
 
-                    if data and data.get("is_playing") and data.get("item"):
+                    playing = bool(data and data.get("is_playing") and data.get("item"))
+                    await self._sync_request_rewards(playing)
+                    if playing:
                         item = data["item"]
                         track_id = item.get("id")
                         images = item.get("album", {}).get("images", [])
@@ -495,6 +501,10 @@ class Bot(commands.Bot):
                 task.cancel()
                 setattr(self, attr, None)
 
+        # Rewards stay redeemable offline, where they'd only ever refund —
+        # pause them with the stream (skip the hysteresis, this isn't a blip).
+        self._not_playing_polls = self.REWARD_PAUSE_AFTER_POLLS
+        await self._sync_request_rewards(False)
         self.store.end_stream(self.stream_id, _now_iso())
         await self._send_recap()
         # Follows arrive by polling, not chat; record them for the report on
@@ -772,6 +782,35 @@ class Bot(commands.Bot):
         await self.handle_commands(message)
 
     # ---------------- CHANNEL-POINT SONG/ALBUM REQUESTS ----------------
+    # Consecutive "not playing" polls (5s apart) before the request rewards
+    # pause. The lag rides out track changes and brief fumbles; unpausing is
+    # immediate so requests reopen the moment music does.
+    REWARD_PAUSE_AFTER_POLLS = 3
+
+    async def _sync_request_rewards(self, playing: bool) -> None:
+        """Grey the song/album rewards out whenever music isn't playing —
+        no music means mic time, and requests shouldn't queue (or charge)
+        into it. Pausing the reward beats refunding after the fact: the
+        points never leave the viewer."""
+        self.spotify_playing = playing
+        if playing:
+            self._not_playing_polls = 0
+        else:
+            self._not_playing_polls += 1
+        want_paused = self._not_playing_polls >= self.REWARD_PAUSE_AFTER_POLLS
+        if want_paused == self._rewards_paused or \
+                (not want_paused and not playing):
+            return
+        ok = True
+        for reward_id in (SONG_REWARD_ID, ALBUM_REWARD_ID):
+            if reward_id:
+                ok = await set_reward_paused(reward_id, want_paused) and ok
+        if ok:
+            self._rewards_paused = want_paused
+            logger.info("Song/album rewards %s (music %s).",
+                        "paused" if want_paused else "unpaused",
+                        "stopped" if want_paused else "playing")
+
     async def _handle_redemption(self, message, reward_id: str,
                                  queue_fn, label: str) -> None:
         """Run a queueing redemption, then settle it: FULFILLED locks the
@@ -921,6 +960,8 @@ class Bot(commands.Bot):
         playlists there are too messy to resolve reliably."""
         if not self.spotify:
             return False, "Song queue is down (Spotify not connected)."
+        if not self.spotify_playing:
+            return False, "Music's paused right now (mic time) — requests reopen when it's playing."
         album, queued = None, 0
         try:
             if m := _SPOTIFY_ALBUM_RE.search(text):
@@ -1056,6 +1097,8 @@ class Bot(commands.Bot):
         title/artist (or ISRC, which is exact) and matched on Spotify."""
         if not self.spotify:
             return False, "Song queue is down (Spotify not connected)."
+        if not self.spotify_playing:
+            return False, "Music's paused right now (mic time) — requests reopen when it's playing."
         try:
             if m := _SPOTIFY_TRACK_RE.search(text):
                 track = await asyncio.to_thread(self.spotify.track, m.group(1))

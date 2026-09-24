@@ -399,6 +399,18 @@ async def create_custom_reward(title: str, cost: int, prompt: str) -> str | None
     return None
 
 
+async def set_reward_paused(reward_id: str, paused: bool) -> bool:
+    """Pause/unpause a reward — paused rewards grey out in the redemption
+    menu, so viewers can't spend at all (used while music isn't playing)."""
+    status, body = await _twitch_request(
+        "PATCH", f"{_REWARDS_URL}?broadcaster_id={BROADCASTER_ID}&id={reward_id}",
+        json={"is_paused": paused},
+    )
+    if status != 200:
+        logger.error("Reward pause=%s failed. HTTP %s: %s", paused, status, body[:120])
+    return status == 200
+
+
 async def find_redemption(reward_id: str, user_id: str) -> str | None:
     """The user's most recent unfulfilled redemption of our reward.
 
