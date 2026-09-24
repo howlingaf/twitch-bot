@@ -150,9 +150,9 @@ _APPLE_TRACK_RE = re.compile(
 _YOUTUBE_RE = re.compile(
     r"(?:youtu\.be/|youtube\.com/(?:watch\?\S*?v=|shorts/))([\w-]{11})")
 _TIDAL_RE = re.compile(r"tidal\.com/(?:browse/)?track/(\d+)")
-_IMGUR_RE = re.compile(
-    r"https?://(?:www\.)?(i\.)?imgur\.com/(?:(a|gallery)/)?([A-Za-z0-9]{5,10})"
-    r"(\.[a-z]{3,4})?")
+# Permanent catbox files only — litter.catbox.moe (Litterbox) self-deletes
+# within days, and the image must still exist when the takeover happens.
+_CATBOX_RE = re.compile(r"https?://files\.catbox\.moe/[A-Za-z0-9]+\.[A-Za-z0-9]{2,5}")
 _AMAZON_ASIN_RE = re.compile(
     r"amazon\.[a-z.]{2,10}/(?:[^/\s]+/)?(?:dp|gp/product|gp/aw/d)/([A-Z0-9]{10})")
 _AMZN_SHORT_RE = re.compile(r"https?://(?:amzn\.(?:to|eu|asia)|a\.co)/\S+")
@@ -864,39 +864,30 @@ class Bot(commands.Bot):
             return "image/webp"
         return None
 
-    @staticmethod
-    def _truncation_hint(text: str) -> str:
-        """Twitch cuts redemption text at 500 chars; a tokenized CDN URL
-        (DeviantArt/wixmp style) dies exactly this way."""
-        if len(text) >= 490:
-            return (" Your link got cut off — Twitch caps the message at 500 "
-                    "characters. Upload the image at postimg.cc and paste "
-                    "the short direct link.")
-        return ""
-
     async def _validate_png(self, text: str) -> tuple[bool, str]:
         """A takeover request must link a real image (PNG/JPEG/WebP/GIF),
         small enough to screen, and — when an Anthropic key is configured —
         pass an AI content check. AI trouble fails open to the human queue,
         never to auto-refund: the broadcaster reviews everything that gets
         this far."""
-        # Imgur has blanket-blocked datacenter IPs since 2023 — the bot can
-        # never fetch or screen an imgur upload, direct or proxied, so those
-        # get steered to hosts that allow review instead of a vague failure.
-        if _IMGUR_RE.search(text):
-            return False, ("imgur blocks automated review — please upload at "
-                           "postimg.cc or catbox.moe and paste that link "
-                           "instead.")
-        m = _URL_RE.search(text)
+        m = _CATBOX_RE.search(text)
         if not m:
-            return False, ("Link the image directly (right-click the "
-                           "image -> copy image address).")
-        url = m.group(0).rstrip(".,!?);]>'\"")
+            if "litter.catbox" in text:
+                return False, ("That's a Litterbox link — it self-deletes. "
+                               "Upload at catbox.moe (the permanent one) and "
+                               "paste the files.catbox.moe link.")
+            return False, ("Upload your image at catbox.moe and paste the "
+                           "files.catbox.moe link — that's the only host "
+                           "accepted.")
+        url = m.group(0)
         try:
             async with aiohttp.ClientSession(
                     timeout=aiohttp.ClientTimeout(total=15)) as session:
                 async with session.get(
                         url, headers={"User-Agent": "Mozilla/5.0"}) as r:
+                    if r.status != 200:
+                        return False, ("catbox says that file doesn't exist "
+                                       "— check the link or re-upload.")
                     # read(n) returns whatever's buffered, not the whole
                     # body — accumulate chunks or the API gets a torso.
                     data = b""
@@ -905,14 +896,11 @@ class Bot(commands.Bot):
                         if len(data) > self.PNG_MAX_BYTES:
                             return False, "That image is huge — keep it under ~4MB."
         except Exception:
-            return False, "Couldn't fetch that link." + self._truncation_hint(text)
+            return False, "Couldn't fetch that catbox link — try re-uploading."
         media_type = self._image_type(data)
         if not media_type:
-            return False, ("That link isn't an image file — link the image "
-                           "itself, not the page it's on."
-                           + (self._truncation_hint(text)
-                              or " Uploading at postimg.cc and pasting the "
-                                "direct link works best."))
+            return False, ("That catbox file isn't an image (PNG/JPG/GIF/"
+                           "WebP).")
         return await self._screen_image(data, media_type)
 
     async def _screen_image(self, png: bytes,
