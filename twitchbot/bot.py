@@ -19,6 +19,9 @@ from .config import (
     SPOTIFY_CLIENT_ID,
     SPOTIFY_SCOPE,
     SONG_REWARD_ID,
+    YOUTUBE_API_KEY,
+    TIDAL_CLIENT_ID,
+    TIDAL_CLIENT_SECRET,
     SPOTIFY_CLIENT_SECRET,
     SPOTIFY_REDIRECT_URI,
     DISCORD_BOT_URL,
@@ -137,6 +140,15 @@ _URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
 # Apple track id: the ?i= param on album/song links, or the trailing path id.
 _APPLE_TRACK_RE = re.compile(
     r"music\.apple\.com/\S*?(?:[?&]i=(\d+)|/song/[^/\s]+/(\d+))")
+_YOUTUBE_RE = re.compile(
+    r"(?:youtu\.be/|youtube\.com/(?:watch\?\S*?v=|shorts/))([\w-]{11})")
+_TIDAL_RE = re.compile(r"tidal\.com/(?:browse/)?track/(\d+)")
+# Bracketed video-title junk that isn't part of the song's name. Version
+# qualifiers like (Remix) or (Sped Up) are deliberately NOT matched — they're
+# exactly what must survive into the Spotify search.
+_YT_JUNK_RE = re.compile(
+    r"\s*[(\[][^)\]]*(official|video|audio|lyric|visuali[sz]er|remaster|"
+    r"hd|4k|m/?v)[^)\]]*[)\]]", re.IGNORECASE)
 _SPOTIFY_TRACK_RE = re.compile(
     r"(?:open\.spotify\.com/(?:intl-[a-z]+/)?track/|spotify:track:)([A-Za-z0-9]+)")
 _RECAP_SKIP_HOSTS = ("github.com", "leetcode.com", "discord.com", "discord.gg", "discordapp.com")
@@ -193,6 +205,9 @@ class Bot(commands.Bot):
         self.store = ChatStore(CHAT_DB)
         self.stream_id: str = ""
         self.presence_task = None
+
+        self._tidal_token = ""
+        self._tidal_token_exp = 0.0
 
         self.init_spotify()
 
@@ -784,10 +799,72 @@ class Bot(commands.Bot):
                 return entry["trackName"], entry["artistName"]
         return None
 
+    async def _youtube_track(self, video_id: str) -> tuple[str, str] | None:
+        """(title, artist) guessed from a YouTube video's metadata. Auto-
+        generated "Artist - Topic" channels are clean; everything else is
+        best-effort parsing of "Artist - Title (junk)"."""
+        try:
+            async with aiohttp.ClientSession(
+                    timeout=aiohttp.ClientTimeout(total=10)) as session:
+                async with session.get(
+                        "https://www.googleapis.com/youtube/v3/videos",
+                        params={"part": "snippet", "id": video_id,
+                                "key": YOUTUBE_API_KEY}) as r:
+                    items = (await r.json()).get("items", [])
+        except Exception:
+            logger.exception("YouTube lookup failed for %s", video_id)
+            return None
+        if not items:
+            return None
+        snippet = items[0]["snippet"]
+        title = _YT_JUNK_RE.sub("", snippet["title"]).strip()
+        channel = snippet["channelTitle"]
+        if channel.endswith(" - Topic"):
+            return title, channel.removesuffix(" - Topic")
+        if " - " in title:
+            artist, song = title.split(" - ", 1)
+            return song.strip(), artist.strip()
+        return title, channel
+
+    async def _tidal_track(self, track_id: str) -> tuple[str, str] | None:
+        """(title, isrc) from Tidal's developer API. The ISRC identifies the
+        exact recording, so the Spotify match can't hit the wrong version."""
+        if not (TIDAL_CLIENT_ID and TIDAL_CLIENT_SECRET):
+            return None
+        try:
+            async with aiohttp.ClientSession(
+                    timeout=aiohttp.ClientTimeout(total=10)) as session:
+                if not self._tidal_token or time.time() > self._tidal_token_exp:
+                    async with session.post(
+                            "https://auth.tidal.com/v1/oauth2/token",
+                            data={"grant_type": "client_credentials"},
+                            auth=aiohttp.BasicAuth(
+                                TIDAL_CLIENT_ID, TIDAL_CLIENT_SECRET)) as r:
+                        tok = await r.json()
+                    self._tidal_token = tok.get("access_token", "")
+                    self._tidal_token_exp = time.time() + tok.get("expires_in", 0) - 60
+                async with session.get(
+                        f"https://openapi.tidal.com/v2/tracks/{track_id}",
+                        params={"countryCode": "US"},
+                        headers={"Authorization": f"Bearer {self._tidal_token}",
+                                 "Accept": "application/vnd.api+json"}) as r:
+                    data = (await r.json(content_type=None)).get("data") or {}
+            attrs = data.get("attributes") or {}
+            if attrs.get("isrc"):
+                return attrs.get("title", "?"), attrs["isrc"]
+        except Exception:
+            logger.exception("Tidal lookup failed for %s", track_id)
+        return None
+
+    async def _spotify_first(self, query: str):
+        found = await asyncio.to_thread(self.spotify.search, query, 1, 0, "track")
+        items = (found.get("tracks") or {}).get("items") or []
+        return items[0] if items else None
+
     async def _queue_song(self, text: str) -> tuple[bool, str]:
         """Links only — free text at this price risks queueing the wrong
-        song off a fuzzy search. Apple Music links are resolved to exact
-        title/artist via iTunes, then matched on Spotify."""
+        song off a fuzzy search. Other platforms' links are resolved to
+        title/artist (or ISRC, which is exact) and matched on Spotify."""
         if not self.spotify:
             return False, "Song queue is down (Spotify not connected)."
         try:
@@ -799,16 +876,33 @@ class Bot(commands.Bot):
                     return False, ("That Apple Music link doesn't point at a "
                                    "song (album links need the song's own link).")
                 title, artist = info
-                found = await asyncio.to_thread(
-                    self.spotify.search,
-                    f'track:"{title}" artist:"{artist}"', 1, 0, "track")
-                items = (found.get("tracks") or {}).get("items") or []
-                if not items:
+                track = await self._spotify_first(
+                    f'track:"{title}" artist:"{artist}"')
+                if not track:
                     return False, f"{title} — {artist} isn't on Spotify."
-                track = items[0]
+            elif m := _YOUTUBE_RE.search(text):
+                info = await self._youtube_track(m.group(1))
+                if not info:
+                    return False, "Couldn't read that YouTube link."
+                song, artist = info
+                track = await self._spotify_first(
+                    f'track:"{song}" artist:"{artist}"') \
+                    or await self._spotify_first(f"{song} {artist}")
+                if not track:
+                    return False, f"Couldn't match \"{song}\" on Spotify."
+            elif m := _TIDAL_RE.search(text):
+                if not (TIDAL_CLIENT_ID and TIDAL_CLIENT_SECRET):
+                    return False, "Tidal links aren't set up yet — use another link."
+                info = await self._tidal_track(m.group(1))
+                if not info:
+                    return False, "Couldn't read that Tidal link."
+                title, isrc = info
+                track = await self._spotify_first(f"isrc:{isrc}")
+                if not track:
+                    return False, f"That exact recording of {title} isn't on Spotify."
             else:
-                return False, ("Paste a Spotify or Apple Music track link "
-                               "(open.spotify.com/track/... or music.apple.com/...).")
+                return False, ("Paste a track link from Spotify, Apple Music, "
+                               "YouTube, or Tidal.")
             await asyncio.to_thread(self.spotify.add_to_queue, track["uri"])
         except SpotifyException as e:
             # 404 NO_ACTIVE_DEVICE: nothing is playing to queue onto.

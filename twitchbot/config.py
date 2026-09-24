@@ -43,6 +43,12 @@ SONG_REWARD_ID = os.getenv("SONG_REWARD_ID", "")
 
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
 
+# Tidal developer app (free, developer.tidal.com) — lets song requests accept
+# Tidal links and match them on Spotify by ISRC (exact recording). Optional:
+# unset means Tidal links are politely refused.
+TIDAL_CLIENT_ID = os.getenv("TIDAL_CLIENT_ID", "")
+TIDAL_CLIENT_SECRET = os.getenv("TIDAL_CLIENT_SECRET", "")
+
 OVERLAY_PORT = int(os.getenv("OVERLAY_PORT", "8765"))
 
 # Per-viewer chat/presence history (see chatstore.py).

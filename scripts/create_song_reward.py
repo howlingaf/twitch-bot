@@ -17,8 +17,9 @@ from twitchbot import twitch_api  # noqa: E402
 
 TITLE = "Queue the next song"
 COST = 10_000
-PROMPT = ("Paste a Spotify or Apple Music track link — it queues next on "
-          "the stream's Spotify. Auto-refunded if it can't be queued.")
+PROMPT = ("Paste a track link (Spotify / Apple Music / YouTube / Tidal) — "
+          "it queues next on the stream's Spotify. Auto-refunded if it "
+          "can't be queued.")
 
 
 def main():
