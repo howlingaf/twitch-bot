@@ -20,6 +20,7 @@ from .config import (
     SPOTIFY_SCOPE,
     SONG_REWARD_ID,
     ALBUM_REWARD_ID,
+    BOOK_REWARD_ID,
     YOUTUBE_API_KEY,
     TIDAL_CLIENT_ID,
     TIDAL_CLIENT_SECRET,
@@ -757,6 +758,9 @@ class Bot(commands.Bot):
             asyncio.create_task(self._handle_redemption(
                 message, ALBUM_REWARD_ID, self._queue_album, "ALBUM"))
             return
+        if reward and reward == BOOK_REWARD_ID:
+            asyncio.create_task(self._handle_book_request(message))
+            return
 
         # Scan for LeetCode submission URLs from chatters
         if self.is_live:
@@ -792,6 +796,22 @@ class Bot(commands.Bot):
                 logger.info("[RECAP] Captured streamer link: %s", url)
 
         await self.handle_commands(message)
+
+    async def _handle_book_request(self, message) -> None:
+        """No automation, on purpose: the redemption stays UNFULFILLED so it
+        lands in the dashboard's Rewards Requests queue, where accepting
+        locks the points in and rejecting refunds them — the reject call is
+        the broadcaster's to make, not the bot's. This just makes sure a
+        request is never missed, and tells the viewer what happens next."""
+        user = message.author.name
+        logger.info("[BOOK] %s requested: %r", user, message.content)
+        await console_lines(
+            f"📚 Book review request from {user}: {message.content}\n"
+            "Accept or refund it: Dashboard -> Viewer Rewards -> Rewards Requests")
+        await self._safe_send(
+            f"@{user} Book review request received! I'll confirm it soon — "
+            "then it's a formal write-up or we talk it through on/off "
+            "stream, your pick.")
 
     # ---------------- CHANNEL-POINT SONG/ALBUM REQUESTS ----------------
     # Consecutive "not playing" polls (5s apart) before the request rewards

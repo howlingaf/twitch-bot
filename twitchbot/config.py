@@ -41,6 +41,9 @@ SPOTIFY_SCOPE = ("user-read-currently-playing user-read-playback-state "
 # scripts/create_song_reward.py, which appends the ids here). Unset = off.
 SONG_REWARD_ID = os.getenv("SONG_REWARD_ID", "")
 ALBUM_REWARD_ID = os.getenv("ALBUM_REWARD_ID", "")
+# Book Review: no automation — redemptions sit in the dashboard queue for a
+# manual accept/reject (reject = refund). The bot only relays them to Discord.
+BOOK_REWARD_ID = os.getenv("BOOK_REWARD_ID", "")
 
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
 

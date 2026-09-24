@@ -20,6 +20,10 @@ REWARDS = [
     ("SONG_REWARD_ID", "Track Review", 15_000,
      "Paste in a song link (Spotify / Apple Music / YouTube / Tidal) and "
      "I'll pull out the IEMs and give you a brutally honest review"),
+    ("BOOK_REWARD_ID", "Book Review", 100_000,
+     "Any book — put the title & author in the text. I may reject and "
+     "refund if it's not for me. You get a formal write-up, or we discuss "
+     "it on/off stream — your pick."),
     ("ALBUM_REWARD_ID", "Album Review", 50_000,
      "Paste in an album link (Spotify / Apple Music / Tidal) and I'll pull "
      "out the IEMs and give you a brutally honest review"),
