@@ -929,6 +929,12 @@ class Bot(commands.Bot):
         the broadcaster's, not the bot's."""
         user = message.author.name
         logger.info("[%s] %s requested: %r", label, user, message.content)
+        # Deleted before validation runs, so a link nobody has screened yet
+        # is never left clickable in chat. If it passes, the bot re-posts it
+        # below — that's the closest Twitch allows to "hold until verified"
+        # (real held-for-review is AutoMod-only; bots can't un-delete).
+        if message.id:
+            asyncio.create_task(delete_chat_message(message.id))
         if validator:
             ok, why = await validator(message.content.strip())
             if not ok:
@@ -940,6 +946,8 @@ class Bot(commands.Bot):
                 logger.info("[%s] rejected: %s (settled=%s)", label, why, settled)
                 await self._safe_send(f"@{user} {why}")
                 return
+        if m := _URL_RE.search(message.content):
+            ack += f" Submission: {m.group(0)}"
         await console_lines(
             f"{'📚' if label == 'BOOK' else '🖼️'} {label.title()} request "
             f"from {user}: {message.content}\n"
