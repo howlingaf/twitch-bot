@@ -21,6 +21,7 @@ from .config import (
     SONG_REWARD_ID,
     ALBUM_REWARD_ID,
     BOOK_REWARD_ID,
+    PNG_REWARD_ID,
     YOUTUBE_API_KEY,
     TIDAL_CLIENT_ID,
     TIDAL_CLIENT_SECRET,
@@ -759,7 +760,16 @@ class Bot(commands.Bot):
                 message, ALBUM_REWARD_ID, self._queue_album, "ALBUM"))
             return
         if reward and reward == BOOK_REWARD_ID:
-            asyncio.create_task(self._handle_book_request(message))
+            asyncio.create_task(self._handle_manual_request(
+                message, "BOOK", "Book review request received! I'll "
+                "confirm it soon — then it's a formal write-up or we talk "
+                "it through on/off stream, your pick."))
+            return
+        if reward and reward == PNG_REWARD_ID:
+            asyncio.create_task(self._handle_manual_request(
+                message, "PNG", "PNG Takeover request received! If the "
+                "image clears review, I become the PNG and the stream "
+                "follows 👀"))
             return
 
         # Scan for LeetCode submission URLs from chatters
@@ -797,21 +807,20 @@ class Bot(commands.Bot):
 
         await self.handle_commands(message)
 
-    async def _handle_book_request(self, message) -> None:
-        """No automation, on purpose: the redemption stays UNFULFILLED so it
+    async def _handle_manual_request(self, message, label: str, ack: str) -> None:
+        """Rewards a human has to judge (books, PNG takeovers). No
+        automation, on purpose: the redemption stays UNFULFILLED so it
         lands in the dashboard's Rewards Requests queue, where accepting
-        locks the points in and rejecting refunds them — the reject call is
-        the broadcaster's to make, not the bot's. This just makes sure a
+        locks the points in and rejecting refunds them — that call is the
+        broadcaster's to make, not the bot's. This just makes sure a
         request is never missed, and tells the viewer what happens next."""
         user = message.author.name
-        logger.info("[BOOK] %s requested: %r", user, message.content)
+        logger.info("[%s] %s requested: %r", label, user, message.content)
         await console_lines(
-            f"📚 Book review request from {user}: {message.content}\n"
+            f"{'📚' if label == 'BOOK' else '🖼️'} {label.title()} request "
+            f"from {user}: {message.content}\n"
             "Accept or refund it: Dashboard -> Viewer Rewards -> Rewards Requests")
-        await self._safe_send(
-            f"@{user} Book review request received! I'll confirm it soon — "
-            "then it's a formal write-up or we talk it through on/off "
-            "stream, your pick.")
+        await self._safe_send(f"@{user} {ack}")
 
     # ---------------- CHANNEL-POINT SONG/ALBUM REQUESTS ----------------
     # Consecutive "not playing" polls (5s apart) before the request rewards

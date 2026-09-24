@@ -20,6 +20,10 @@ REWARDS = [
     ("SONG_REWARD_ID", "Track Review", 15_000,
      "Paste in a song link (Spotify / Apple Music / YouTube / Tidal) and "
      "I'll pull out the IEMs and give you a brutally honest review"),
+    ("PNG_REWARD_ID", "PNG Takeover", 150_000,
+     "Link a PNG (Twitch ToS applies — I can reject & refund). I'll VTube "
+     "as it and theme the whole stream around it. The biggest reward there "
+     "is."),
     ("BOOK_REWARD_ID", "Book Review", 100_000,
      "Any book — put the title & author in the text. I may reject and "
      "refund if it's not for me. You get a formal write-up, or we discuss "

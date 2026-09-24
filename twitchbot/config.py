@@ -44,6 +44,9 @@ ALBUM_REWARD_ID = os.getenv("ALBUM_REWARD_ID", "")
 # Book Review: no automation — redemptions sit in the dashboard queue for a
 # manual accept/reject (reject = refund). The bot only relays them to Discord.
 BOOK_REWARD_ID = os.getenv("BOOK_REWARD_ID", "")
+# PNG Takeover: same manual flow as books — the image must pass a human ToS
+# check before the stream gets themed around it.
+PNG_REWARD_ID = os.getenv("PNG_REWARD_ID", "")
 
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
 
