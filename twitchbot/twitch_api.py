@@ -399,12 +399,18 @@ async def create_custom_reward(title: str, cost: int, prompt: str) -> str | None
     return None
 
 
-async def set_reward_paused(reward_id: str, paused: bool) -> bool:
-    """Pause/unpause a reward — paused rewards grey out in the redemption
-    menu, so viewers can't spend at all (used while music isn't playing)."""
+async def set_reward_paused(reward_id: str, paused: bool,
+                            title: str | None = None) -> bool:
+    """Pause/unpause a reward, optionally retitling it in the same call.
+
+    Twitch's "temporarily unavailable" notice can't be customized, so the
+    title carries the why — it's the only text always visible on the tile."""
+    body_json = {"is_paused": paused}
+    if title:
+        body_json["title"] = title
     status, body = await _twitch_request(
         "PATCH", f"{_REWARDS_URL}?broadcaster_id={BROADCASTER_ID}&id={reward_id}",
-        json={"is_paused": paused},
+        json=body_json,
     )
     if status != 200:
         logger.error("Reward pause=%s failed. HTTP %s: %s", paused, status, body[:120])

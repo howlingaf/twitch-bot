@@ -802,9 +802,11 @@ class Bot(commands.Bot):
                 (not want_paused and not playing):
             return
         ok = True
-        for reward_id in (SONG_REWARD_ID, ALBUM_REWARD_ID):
+        for reward_id, base in ((SONG_REWARD_ID, "Queue the next song"),
+                                (ALBUM_REWARD_ID, "Queue a whole album")):
             if reward_id:
-                ok = await set_reward_paused(reward_id, want_paused) and ok
+                title = f"{base} (music off)" if want_paused else base
+                ok = await set_reward_paused(reward_id, want_paused, title) and ok
         if ok:
             self._rewards_paused = want_paused
             logger.info("Song/album rewards %s (music %s).",
