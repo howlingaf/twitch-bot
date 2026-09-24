@@ -782,9 +782,9 @@ class Bot(commands.Bot):
                     user, message.content, reply, settled)
         await self._safe_send(f"@{user} {reply}")
 
-    async def _apple_track(self, apple_id: str) -> tuple[str, str] | None:
-        """(title, artist) for an Apple Music track id, from the keyless
-        iTunes lookup API. None if it isn't a resolvable song."""
+    async def _apple_track(self, apple_id: str) -> tuple[str, str, int] | None:
+        """(title, artist, duration_ms) for an Apple Music track id, from the
+        keyless iTunes lookup API. None if it isn't a resolvable song."""
         try:
             async with aiohttp.ClientSession(
                     timeout=aiohttp.ClientTimeout(total=10)) as session:
@@ -796,19 +796,21 @@ class Bot(commands.Bot):
             return None
         for entry in results:
             if entry.get("kind") == "song":
-                return entry["trackName"], entry["artistName"]
+                return (entry["trackName"], entry["artistName"],
+                        entry.get("trackTimeMillis") or 0)
         return None
 
-    async def _youtube_track(self, video_id: str) -> tuple[str, str] | None:
-        """(title, artist) guessed from a YouTube video's metadata. Auto-
-        generated "Artist - Topic" channels are clean; everything else is
-        best-effort parsing of "Artist - Title (junk)"."""
+    async def _youtube_track(self, video_id: str) -> tuple[str, str, int] | None:
+        """(title, artist, video_ms) guessed from a YouTube video's metadata.
+        Auto-generated "Artist - Topic" channels are clean; everything else
+        is best-effort parsing of "Artist - Title (junk)". The duration is
+        the VIDEO's, which may include intros — a ranking signal only."""
         try:
             async with aiohttp.ClientSession(
                     timeout=aiohttp.ClientTimeout(total=10)) as session:
                 async with session.get(
                         "https://www.googleapis.com/youtube/v3/videos",
-                        params={"part": "snippet", "id": video_id,
+                        params={"part": "snippet,contentDetails", "id": video_id,
                                 "key": YOUTUBE_API_KEY}) as r:
                     items = (await r.json()).get("items", [])
         except Exception:
@@ -817,14 +819,18 @@ class Bot(commands.Bot):
         if not items:
             return None
         snippet = items[0]["snippet"]
+        dur = items[0].get("contentDetails", {}).get("duration", "")
+        m = re.fullmatch(r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?", dur)
+        ms = (int(m.group(1) or 0) * 3600 + int(m.group(2) or 0) * 60
+              + int(m.group(3) or 0)) * 1000 if m else 0
         title = _YT_JUNK_RE.sub("", snippet["title"]).strip()
         channel = snippet["channelTitle"]
         if channel.endswith(" - Topic"):
-            return title, channel.removesuffix(" - Topic")
+            return title, channel.removesuffix(" - Topic"), ms
         if " - " in title:
             artist, song = title.split(" - ", 1)
-            return song.strip(), artist.strip()
-        return title, channel
+            return song.strip(), artist.strip(), ms
+        return title, channel, ms
 
     async def _tidal_track(self, track_id: str) -> tuple[str, str] | None:
         """(title, isrc) from Tidal's developer API. The ISRC identifies the
@@ -861,6 +867,44 @@ class Bot(commands.Bot):
         items = (found.get("tracks") or {}).get("items") or []
         return items[0] if items else None
 
+    # Same recording across platforms differs by 0-2s (encoder padding);
+    # different versions (edit/extended/remix) differ by 15s+. ±5s separates
+    # the two populations with room to spare.
+    DURATION_TOLERANCE_MS = 5_000
+
+    async def _spotify_best(self, query: str, fallback_query: str,
+                            want_title: str, want_ms: int,
+                            strict: bool):
+        """The candidate that best matches the source track, not just
+        Spotify's top hit. Ranked by duration closeness with an exact-title
+        tie-break; `strict` rejects everything outside the duration window
+        (Apple, where metadata is the song's real length). Non-strict keeps
+        the best candidate regardless (YouTube, where video length includes
+        intros and only helps as a ranking signal)."""
+        found = await asyncio.to_thread(self.spotify.search, query, 5, 0, "track")
+        items = (found.get("tracks") or {}).get("items") or []
+        if not items and fallback_query:
+            found = await asyncio.to_thread(
+                self.spotify.search, fallback_query, 5, 0, "track")
+            items = (found.get("tracks") or {}).get("items") or []
+        if not items:
+            return None
+
+        def norm(s: str) -> str:
+            return re.sub(r"[^a-z0-9]", "", s.lower())
+
+        def score(track) -> tuple:
+            dur_gap = abs((track.get("duration_ms") or 0) - want_ms) \
+                if want_ms else 0
+            return (norm(track["name"]) != norm(want_title), dur_gap)
+
+        best = min(items, key=score)
+        if strict and want_ms and \
+                abs((best.get("duration_ms") or 0) - want_ms) > self.DURATION_TOLERANCE_MS \
+                and norm(best["name"]) != norm(want_title):
+            return None
+        return best
+
     async def _queue_song(self, text: str) -> tuple[bool, str]:
         """Links only — free text at this price risks queueing the wrong
         song off a fuzzy search. Other platforms' links are resolved to
@@ -875,19 +919,21 @@ class Bot(commands.Bot):
                 if not info:
                     return False, ("That Apple Music link doesn't point at a "
                                    "song (album links need the song's own link).")
-                title, artist = info
-                track = await self._spotify_first(
-                    f'track:"{title}" artist:"{artist}"')
+                title, artist, ms = info
+                track = await self._spotify_best(
+                    f'track:"{title}" artist:"{artist}"', f"{title} {artist}",
+                    title, ms, strict=True)
                 if not track:
-                    return False, f"{title} — {artist} isn't on Spotify."
+                    return False, (f"Couldn't find that exact version of "
+                                   f"{title} — {artist} on Spotify.")
             elif m := _YOUTUBE_RE.search(text):
                 info = await self._youtube_track(m.group(1))
                 if not info:
                     return False, "Couldn't read that YouTube link."
-                song, artist = info
-                track = await self._spotify_first(
-                    f'track:"{song}" artist:"{artist}"') \
-                    or await self._spotify_first(f"{song} {artist}")
+                song, artist, ms = info
+                track = await self._spotify_best(
+                    f'track:"{song}" artist:"{artist}"', f"{song} {artist}",
+                    song, ms, strict=False)
                 if not track:
                     return False, f"Couldn't match \"{song}\" on Spotify."
             elif m := _TIDAL_RE.search(text):
