@@ -861,14 +861,18 @@ class Bot(commands.Bot):
                     timeout=aiohttp.ClientTimeout(total=15)) as session:
                 async with session.get(
                         url, headers={"User-Agent": "Mozilla/5.0"}) as r:
-                    data = await r.content.read(self.PNG_MAX_BYTES + 1)
+                    # read(n) returns whatever's buffered, not the whole
+                    # body — accumulate chunks or the API gets a torso.
+                    data = b""
+                    async for chunk in r.content.iter_chunked(1 << 16):
+                        data += chunk
+                        if len(data) > self.PNG_MAX_BYTES:
+                            return False, "That PNG is huge — keep it under ~4MB."
         except Exception:
             return False, "Couldn't fetch that link."
         if not data.startswith(b"\x89PNG\r\n\x1a\n"):
             return False, ("That link isn't a PNG file — link the image "
                            "itself, not the page it's on.")
-        if len(data) > self.PNG_MAX_BYTES:
-            return False, "That PNG is huge — keep it under ~4MB."
         return await self._screen_image(data)
 
     async def _screen_image(self, png: bytes) -> tuple[bool, str]:
