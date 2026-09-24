@@ -150,6 +150,9 @@ _APPLE_TRACK_RE = re.compile(
 _YOUTUBE_RE = re.compile(
     r"(?:youtu\.be/|youtube\.com/(?:watch\?\S*?v=|shorts/))([\w-]{11})")
 _TIDAL_RE = re.compile(r"tidal\.com/(?:browse/)?track/(\d+)")
+_IMGUR_RE = re.compile(
+    r"https?://(?:www\.)?(i\.)?imgur\.com/(?:(a|gallery)/)?([A-Za-z0-9]{5,10})"
+    r"(\.[a-z]{3,4})?")
 _AMAZON_ASIN_RE = re.compile(
     r"amazon\.[a-z.]{2,10}/(?:[^/\s]+/)?(?:dp|gp/product|gp/aw/d)/([A-Z0-9]{10})")
 _AMZN_SHORT_RE = re.compile(r"https?://(?:amzn\.(?:to|eu|asia)|a\.co)/\S+")
@@ -867,8 +870,8 @@ class Bot(commands.Bot):
         (DeviantArt/wixmp style) dies exactly this way."""
         if len(text) >= 490:
             return (" Your link got cut off — Twitch caps the message at 500 "
-                    "characters. Upload the image to imgur and paste the "
-                    "short direct link.")
+                    "characters. Upload the image at postimg.cc and paste "
+                    "the short direct link.")
         return ""
 
     async def _validate_png(self, text: str) -> tuple[bool, str]:
@@ -877,6 +880,13 @@ class Bot(commands.Bot):
         pass an AI content check. AI trouble fails open to the human queue,
         never to auto-refund: the broadcaster reviews everything that gets
         this far."""
+        # Imgur has blanket-blocked datacenter IPs since 2023 — the bot can
+        # never fetch or screen an imgur upload, direct or proxied, so those
+        # get steered to hosts that allow review instead of a vague failure.
+        if _IMGUR_RE.search(text):
+            return False, ("imgur blocks automated review — please upload at "
+                           "postimg.cc or catbox.moe and paste that link "
+                           "instead.")
         m = _URL_RE.search(text)
         if not m:
             return False, ("Link the image directly (right-click the "
@@ -901,8 +911,8 @@ class Bot(commands.Bot):
             return False, ("That link isn't an image file — link the image "
                            "itself, not the page it's on."
                            + (self._truncation_hint(text)
-                              or " Uploading to imgur and pasting the direct "
-                                "link works best."))
+                              or " Uploading at postimg.cc and pasting the "
+                                "direct link works best."))
         return await self._screen_image(data, media_type)
 
     async def _screen_image(self, png: bytes,
