@@ -134,6 +134,9 @@ _LEETCODE_SUBMISSION_RE = re.compile(
 )
 
 _URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
+# Apple track id: the ?i= param on album/song links, or the trailing path id.
+_APPLE_TRACK_RE = re.compile(
+    r"music\.apple\.com/\S*?(?:[?&]i=(\d+)|/song/[^/\s]+/(\d+))")
 _SPOTIFY_TRACK_RE = re.compile(
     r"(?:open\.spotify\.com/(?:intl-[a-z]+/)?track/|spotify:track:)([A-Za-z0-9]+)")
 _RECAP_SKIP_HOSTS = ("github.com", "leetcode.com", "discord.com", "discord.gg", "discordapp.com")
@@ -764,19 +767,48 @@ class Bot(commands.Bot):
                     user, message.content, reply, settled)
         await self._safe_send(f"@{user} {reply}")
 
+    async def _apple_track(self, apple_id: str) -> tuple[str, str] | None:
+        """(title, artist) for an Apple Music track id, from the keyless
+        iTunes lookup API. None if it isn't a resolvable song."""
+        try:
+            async with aiohttp.ClientSession(
+                    timeout=aiohttp.ClientTimeout(total=10)) as session:
+                async with session.get("https://itunes.apple.com/lookup",
+                                       params={"id": apple_id, "entity": "song"}) as r:
+                    results = (await r.json(content_type=None)).get("results", [])
+        except Exception:
+            logger.exception("iTunes lookup failed for %s", apple_id)
+            return None
+        for entry in results:
+            if entry.get("kind") == "song":
+                return entry["trackName"], entry["artistName"]
+        return None
+
     async def _queue_song(self, text: str) -> tuple[bool, str]:
+        """Links only — free text at this price risks queueing the wrong
+        song off a fuzzy search. Apple Music links are resolved to exact
+        title/artist via iTunes, then matched on Spotify."""
         if not self.spotify:
             return False, "Song queue is down (Spotify not connected)."
         try:
             if m := _SPOTIFY_TRACK_RE.search(text):
                 track = await asyncio.to_thread(self.spotify.track, m.group(1))
-            else:
+            elif m := _APPLE_TRACK_RE.search(text):
+                info = await self._apple_track(m.group(1) or m.group(2))
+                if not info:
+                    return False, ("That Apple Music link doesn't point at a "
+                                   "song (album links need the song's own link).")
+                title, artist = info
                 found = await asyncio.to_thread(
-                    self.spotify.search, text, 1, 0, "track")
+                    self.spotify.search,
+                    f'track:"{title}" artist:"{artist}"', 1, 0, "track")
                 items = (found.get("tracks") or {}).get("items") or []
                 if not items:
-                    return False, f"Couldn't find \"{text}\" on Spotify."
+                    return False, f"{title} — {artist} isn't on Spotify."
                 track = items[0]
+            else:
+                return False, ("Paste a Spotify or Apple Music track link "
+                               "(open.spotify.com/track/... or music.apple.com/...).")
             await asyncio.to_thread(self.spotify.add_to_queue, track["uri"])
         except SpotifyException as e:
             # 404 NO_ACTIVE_DEVICE: nothing is playing to queue onto.
