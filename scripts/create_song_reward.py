@@ -21,9 +21,9 @@ REWARDS = [
      "Paste in a song link (Spotify / Apple Music / YouTube / Tidal) and "
      "I'll pull out the IEMs and give you a brutally honest review"),
     ("PNG_REWARD_ID", "PNG Takeover", 150_000,
-     "Upload your image at catbox.moe and paste the files.catbox.moe "
-     "link (PNG/JPG/GIF/WebP). Twitch ToS applies; I can reject & refund. "
-     "I'll VTube as it and theme the whole stream around it."),
+     # The user's own wording — don't edit without their sign-off.
+     "Paste a catbox.moe link and I'll tube it and theme the whole stream "
+     "around it. Subject to Twitch Terms of Service"),
     ("BOOK_REWARD_ID", "Book Review", 100_000,
      "Paste an Amazon link to the book (amazon.com/dp/...). I may reject "
      "& refund if it's not for me. Formal write-up or we discuss it "
