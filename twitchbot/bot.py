@@ -60,29 +60,24 @@ from .helpers import leetcode_slug, resolve_problem_name
 from .notify import (alert_owner, review_lock, stream_alert, stream_alert_vod,
                      stream_problems as notify_stream_problems)
 
-# Ad cadence. The period is measured warning-to-warning, so a break lands at
-# the same point in every hour of a stream.
-AD_PERIOD_SECONDS = 60 * 60
+# The scheduler IS the pre-roll bank: Helix's preroll_free_time counts down
+# in real time and a break tops it up (~3600s for 180s of ads — though the
+# measured rate varies, one 117s break bought 14.9x, which is why the bank is
+# read and never modeled). The loop polls it and runs a full break only when
+# it's nearly empty, so interruptions are the minimum that keeps pre-rolls
+# off, and a manual break pushes the next one back by exactly the credit it
+# earns — the deck countdown and Twitch's own pre-roll timer agree.
 AD_WARNING_SECONDS = 60
 AD_LENGTH_SECONDS = 180
-# A break that doesn't run costs the whole hour: the pre-roll bank is topped up
-# with about five seconds to spare, so it lapses minutes later. Retries stay
-# inside the hour and never touch chat — viewers don't need the bot's plumbing,
-# and a warning is only ever sent when an ad is genuinely about to run.
+AD_POLL_SECONDS = 60
+# Cover still left when the warning goes out: the warning minute plus slack
+# for a slow commercial call, so the break lands before the bank empties.
+AD_SCHEDULE_SLACK_SECONDS = 120
+AD_TRIGGER_SECONDS = AD_WARNING_SECONDS + AD_SCHEDULE_SLACK_SECONDS
+# Retries never touch chat — a warning is only sent when an ad is genuinely
+# about to run.
 AD_RETRY_DELAY_SECONDS = 5 * 60
 AD_MAX_ATTEMPTS = 3
-# Floor on the air between a manual break ending and the next scheduled one
-# starting — Twitch refuses back-to-back breaks for ~8 min (retry_after=480).
-# The one delayed break snaps back to the grid afterwards.
-MANUAL_AD_MIN_GAP_SECONDS = 10 * 60
-# Seconds of pre-roll cover one second of ad buys, measured from the logs
-# (a 180s break moved preroll_free_time 185 -> 3605: +3420s, i.e. 19x). Used
-# to size each scheduled break to what the bank actually needs; sizing errors
-# self-correct next hour because the bank is re-read, not modeled.
-AD_CREDIT_RATE = 19
-# Size breaks to cover until the next slot plus this much slack for retries.
-AD_SCHEDULE_SLACK_SECONDS = 120
-AD_MIN_LENGTH_SECONDS = 30
 
 
 def _parse_iso(ts: str) -> datetime:
@@ -195,8 +190,9 @@ class Bot(commands.Bot):
         # them into seconds-remaining on request.
         self.ad_phase = "idle"                        # idle | warn | ad
         self.ad_phase_ends = 0.0                      # when warn/ad ends
-        self.ad_anchor_mono = 0.0                     # cadence grid origin
-        self.next_warning_mono: float | None = None   # None = loop not running
+        # (preroll_free_time seconds, monotonic at read). The bank drives
+        # the whole ad schedule; None until the first successful read.
+        self.ad_bank: tuple[int, float] | None = None
         self.spotify_task = None
         self.lt_task = None
         self._last_spotify_track_id = None
@@ -295,13 +291,11 @@ class Bot(commands.Bot):
                     if first_check:
                         logger.info(
                             "Stream was already LIVE when bot started; "
-                            "marking live without immediate ad."
+                            "the pre-roll bank decides whether a break is due."
                         )
                         self.is_live = True
                         await self._capture_stream_title()
-                        self.ad_task = asyncio.create_task(
-                            self._run_ad_loop(run_first_immediately=False)
-                        )
+                        self.ad_task = asyncio.create_task(self._run_ad_loop())
                     else:
                         logger.info("Stream just went LIVE!")
                         self.is_live = True
@@ -310,9 +304,7 @@ class Bot(commands.Bot):
                         logger.info("Go-live alert posted: %s", self.alert_message_id)
                         if self.alert_message_id and self.stream_id:
                             self.store.set_alert_message(self.stream_id, self.alert_message_id)
-                        self.ad_task = asyncio.create_task(
-                            self._run_ad_loop(run_first_immediately=True)
-                        )
+                        self.ad_task = asyncio.create_task(self._run_ad_loop())
 
                     self.spotify_task = asyncio.create_task(
                         self.monitor_spotify()
@@ -1448,49 +1440,41 @@ class Bot(commands.Bot):
             "the top of the next hour."
         )
 
-    async def _run_ad_loop(self, run_first_immediately: bool):
-        logger.info(
-            "Ad loop started (run_first_immediately=%s).",
-            run_first_immediately,
-        )
+    async def _run_ad_loop(self):
+        logger.info("Ad loop started (pre-roll bank driven).")
 
         while not self.connected_channels:
             await asyncio.sleep(1)
 
-        if not run_first_immediately:
-            logger.info(
-                "Skipping immediate first ad (stream was already live at bot startup "
-                "or run_first_immediately=False)."
-            )
-        first_cycle = run_first_immediately
-        # Warnings fire on a fixed grid: anchor + k*period, so breaks land at
-        # the same minute every hour no matter what happens in between. The
-        # "bare minimum ads" half of the deal comes from sizing each break to
-        # the pre-roll bank (_needed_ad_length) rather than moving the grid.
-        # The first slot is a full period out when the first ad is skipped:
-        # the loop only skips the WAIT on its first cycle, so a slot at "now"
-        # would fire an ad immediately on a restart into a live stream.
-        self.ad_anchor_mono = time.monotonic()
-        self.next_warning_mono = self.ad_anchor_mono + (
-            0 if run_first_immediately else AD_PERIOD_SECONDS)
-
         try:
             while self.is_live:
-                # One ad cycle: alert -> commercial -> wrap-up. An unexpected
-                # error is contained to this cycle so ads rejoin the hourly
-                # schedule instead of dying for the rest of the stream.
+                # One ad cycle: poll -> alert -> commercial -> wrap-up. An
+                # unexpected error is contained to this cycle so ads rejoin
+                # the schedule instead of dying for the rest of the stream.
                 try:
-                    if not first_cycle:
-                        # Re-check the deadline as it sleeps: a manual ad
-                        # (run_manual_ad) pushes it back mid-nap.
-                        while self.is_live and \
-                                (delay := self.next_warning_mono - time.monotonic()) > 0:
-                            await asyncio.sleep(min(delay, 5))
-                        if not self.is_live:
-                            break
+                    # A manual break in flight: let it finish, then re-read
+                    # the bank with its credit landed.
+                    if self.ad_phase != "idle":
+                        await asyncio.sleep(5)
+                        continue
 
-                    self.next_warning_mono = self._next_ad_slot(time.monotonic())
-                    served, before, length = 0, None, 0
+                    banked = await self._read_bank()
+                    remaining = self._bank_remaining()
+                    if banked is None and remaining is None:
+                        # The bank has never been readable. Assume pre-rolls
+                        # are due and let the cycle's pre-flight retries and
+                        # owner alert deal with Helix being down.
+                        remaining = 0
+                    if remaining > AD_TRIGGER_SECONDS:
+                        # Wake when the bank should cross the trigger, or in
+                        # a minute — whichever is sooner — so manual-ad
+                        # credit reaches the countdown promptly.
+                        await asyncio.sleep(
+                            min(AD_POLL_SECONDS,
+                                max(5, remaining - AD_TRIGGER_SECONDS)))
+                        continue
+
+                    served, before, refilled = 0, None, False
 
                     for attempt in range(1, AD_MAX_ATTEMPTS + 1):
                         if not self.is_live:
@@ -1507,29 +1491,27 @@ class Bot(commands.Bot):
                             await asyncio.sleep(AD_RETRY_DELAY_SECONDS)
                             continue
 
-                        length = self._needed_ad_length(
-                            before.get("preroll_free_time") or 0)
-                        if length == 0:
+                        banked = before.get("preroll_free_time") or 0
+                        self.ad_bank = (banked, time.monotonic())
+                        if banked > AD_TRIGGER_SECONDS + AD_WARNING_SECONDS:
+                            # A manual break raced the trigger and refilled
+                            # the bank between polls — nothing to do.
                             logger.info(
-                                "Skipping this slot: %ss of pre-roll cover banked "
-                                "(manual ads have this hour covered).",
-                                before.get("preroll_free_time"),
-                            )
+                                "No break needed: %ss of pre-roll cover banked.",
+                                banked)
+                            refilled = True
                             break
 
                         self.ad_phase = "warn"
                         self.ad_phase_ends = time.monotonic() + AD_WARNING_SECONDS
                         await self._safe_send("Ad in 1 minute!")
-                        logger.info(
-                            "%s ad alert sent (attempt %d).",
-                            "First" if first_cycle else "Recurring", attempt,
-                        )
+                        logger.info("Ad alert sent (attempt %d).", attempt)
 
                         await asyncio.sleep(AD_WARNING_SECONDS)
                         if not self.is_live:
                             break
 
-                        served, _ = await start_commercial(length)
+                        served, _ = await start_commercial(AD_LENGTH_SECONDS)
                         if served:
                             break
 
@@ -1543,7 +1525,7 @@ class Bot(commands.Bot):
                     if not self.is_live:
                         break
 
-                    if length == 0:    # slot skipped, bank already covers it
+                    if refilled:
                         continue
 
                     if not served:
@@ -1561,6 +1543,9 @@ class Bot(commands.Bot):
 
                     await self._safe_send("Ad break over!")
                     after = await _log_ad_state("post-break")
+                    if after:
+                        self.ad_bank = (after.get("preroll_free_time") or 0,
+                                        time.monotonic())
                     # What a break actually buys, measured rather than assumed —
                     # this is the number that decides how far the period can be
                     # stretched before pre-rolls come back.
@@ -1575,69 +1560,65 @@ class Bot(commands.Bot):
                     else:
                         logger.info("Ad break completed (%ss).", served)
                 except Exception:
-                    logger.exception(
-                        "Ad cycle crashed; rejoining the hourly ad schedule."
-                    )
+                    logger.exception("Ad cycle crashed; re-polling the bank.")
                 finally:
-                    first_cycle = False
                     self.ad_phase = "idle"
 
         except asyncio.CancelledError:
             logger.info("Ad loop cancelled (stream offline).")
         finally:
             self.ad_phase = "idle"
-            self.next_warning_mono = None
 
         logger.info("Ad loop stopped (stream offline).")
 
-    def _next_ad_slot(self, now: float) -> float:
-        """The first warning slot on the cadence grid strictly after `now`."""
-        k = int((now - self.ad_anchor_mono) // AD_PERIOD_SECONDS) + 1
-        return self.ad_anchor_mono + k * AD_PERIOD_SECONDS
+    async def _read_bank(self) -> int | None:
+        """Refresh the cached pre-roll bank from Helix. None on failure
+        (the cache keeps extrapolating from the last good read)."""
+        state = await get_ad_schedule()
+        if state is None:
+            return None
+        banked = state.get("preroll_free_time") or 0
+        self.ad_bank = (banked, time.monotonic())
+        return banked
 
-    @staticmethod
-    def _needed_ad_length(banked: int) -> int:
-        """Seconds of break needed to keep pre-rolls away until the next slot.
-
-        Sized against the bank Twitch reports, so credit from manual breaks
-        automatically shortens the next scheduled one instead of moving it.
-        0 means the slot can be skipped outright.
-        """
-        required = AD_PERIOD_SECONDS + AD_SCHEDULE_SLACK_SECONDS - banked
-        if required <= 0:
-            return 0
-        length = (required + AD_CREDIT_RATE - 1) // AD_CREDIT_RATE
-        return max(AD_MIN_LENGTH_SECONDS, min(AD_LENGTH_SECONDS, length))
+    def _bank_remaining(self) -> int | None:
+        """Seconds of pre-roll cover left right now — the bank drains in
+        real time, so extrapolate from the last successful read. None if
+        it has never been read."""
+        if self.ad_bank is None:
+            return None
+        value, at = self.ad_bank
+        return max(0, int(value - (time.monotonic() - at)))
 
     def ad_status(self) -> tuple[str, int]:
         """(phase, seconds remaining) for the Stream Deck countdown.
 
-        Phases: offline; idle (seconds until the next scheduled ad STARTS,
-        i.e. warning time plus the warning minute); warn (until the ad
-        starts — the same countdown chat was just given); ad (until the
-        break ends). All derived from the deadlines the loop itself runs
-        on, so the key and the chat messages can't disagree.
+        Phases: offline; idle (seconds until the next ad starts, derived
+        from the pre-roll bank the loop schedules on — -1 while the bank
+        hasn't been read yet); warn (until the ad starts — the same
+        countdown chat was just given); ad (until the break ends).
         """
         now = time.monotonic()
         if not self.is_live:
             return "offline", 0
         if self.ad_phase in ("warn", "ad"):
             return self.ad_phase, int(self.ad_phase_ends - now)
-        if self.next_warning_mono is None:
-            return "idle", 0
-        return "idle", int(self.next_warning_mono - now) + AD_WARNING_SECONDS
+        remaining = self._bank_remaining()
+        if remaining is None:
+            return "idle", -1
+        # The warning fires at AD_TRIGGER_SECONDS and the break a minute
+        # later, i.e. when the bank is down to the slack margin.
+        return "idle", max(0, remaining - AD_SCHEDULE_SLACK_SECONDS)
 
     async def run_manual_ad(self, length: int = 60) -> tuple[bool, str]:
         """Start an ad break right now (Stream Deck button / console).
 
         Sends the same chat messages a scheduled break does, minus the
         one-minute warning — the point of the button is "cover me now".
-        The schedule stays on its fixed grid: this break's credit lands in
-        the pre-roll bank, which automatically SHORTENS the next scheduled
-        break (or skips it) via _needed_ad_length — minimum total ad time
-        without the cadence ever moving. The only exception is the
-        MANUAL_AD_MIN_GAP_SECONDS floor, which can delay the one next break
-        if this ad ends too close to it; the grid snaps back after.
+        There is no schedule to adjust: the credit lands in the pre-roll
+        bank and the loop schedules off the bank, so the next break moves
+        back by exactly what this one earned — the countdown updates the
+        moment the wrap-up re-reads the bank.
         """
         if not self.is_live:
             return False, "not live"
@@ -1651,12 +1632,6 @@ class Bot(commands.Bot):
             self.ad_phase = "idle"
             return False, f"ad refused\n{why}"
         self.ad_phase_ends = time.monotonic() + served
-        if self.next_warning_mono is not None:
-            self.next_warning_mono = max(
-                self.next_warning_mono,
-                self.ad_phase_ends
-                + MANUAL_AD_MIN_GAP_SECONDS - AD_WARNING_SECONDS,
-            )
         await self._safe_send(f"Ad starting ({_ad_length_label(served)}).")
         asyncio.create_task(self._manual_ad_wrapup(served))
         return True, f"{served}s ad\nrunning"
@@ -1667,7 +1642,10 @@ class Bot(commands.Bot):
             self.ad_phase = "idle"
             if self.is_live:
                 await self._safe_send("Ad break over!")
-                await _log_ad_state("post-break manual")
+                state = await _log_ad_state("post-break manual")
+                if state:
+                    self.ad_bank = (state.get("preroll_free_time") or 0,
+                                    time.monotonic())
         except Exception:
             self.ad_phase = "idle"
             logger.exception("Manual ad wrap-up failed")

@@ -34,7 +34,8 @@ def _clock(seconds: int) -> str:
 # What the key should read in each phase. Two short lines fit a key face.
 _TITLES = {
     "offline": lambda s: "offline",
-    "idle": lambda s: f"next ad\n{_clock(s)}",
+    # -1 = the bot hasn't read the pre-roll bank yet this stream.
+    "idle": lambda s: "next ad\n--:--" if s < 0 else f"next ad\n{_clock(s)}",
     "warn": lambda s: f"AD SOON\n{_clock(s)}",
     "ad": lambda s: f"AD\n{_clock(s)}",
 }
