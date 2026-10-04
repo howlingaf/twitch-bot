@@ -1891,7 +1891,7 @@ class Bot(commands.Bot):
     @commands.command(name='lurk')
     async def lurk(self, ctx):
         # A tier-1 sub emote: it only renders if the bot account is subscribed.
-        await self.say('howlin67Lurk')
+        await self.say(' '.join(['howlin67Lurk'] * 20))
 
     @commands.command(name="commands")
     async def list_commands(self, ctx):
