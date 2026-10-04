@@ -1888,6 +1888,11 @@ class Bot(commands.Bot):
         logger.info("!discord triggered by %s", ctx.author.name)
         await self.say('https://discord.gg/tHjeDK8Cd7')
 
+    @commands.command(name='lurk')
+    async def lurk(self, ctx):
+        # A tier-1 sub emote: it only renders if the bot account is subscribed.
+        await self.say('howlin67Lurk')
+
     @commands.command(name="commands")
     async def list_commands(self, ctx):
         try:
