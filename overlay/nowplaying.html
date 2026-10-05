@@ -29,9 +29,11 @@
     transition: opacity 0.5s ease, transform 0.5s ease;
   }
 
+  /* "none" rather than translateY(0): any leftover transform keeps the card
+     on its own compositing layer, which renders text and art soft. */
   #nowplaying.visible {
     opacity: 1;
-    transform: translateY(0);
+    transform: none;
   }
 
   #album-art {
@@ -97,6 +99,11 @@
 </div>
 
 <script>
+  // ?scale=2 renders everything at 2x so it stays sharp when the OBS source
+  // is sized up (set the browser source to 680 wide, don't stretch it).
+  const scale = parseFloat(new URLSearchParams(location.search).get('scale'));
+  if (scale > 0) document.body.style.zoom = scale;
+
   const container = document.getElementById('nowplaying');
   const albumArt = document.getElementById('album-art');
   const songName = document.getElementById('song-name');
