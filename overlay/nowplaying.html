@@ -201,7 +201,23 @@
     };
   }
 
-  connect();
+  // ?demo=1 shows a sample track without the bot (it only reads Spotify while
+  // live), to check the look in OBS's preview offline.
+  if (new URLSearchParams(location.search).get('demo')) {
+    const art = 'data:image/svg+xml,' + encodeURIComponent(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="640">' +
+      '<rect width="640" height="640" fill="#1db954"/>' +
+      '<circle cx="320" cy="320" r="200" fill="#191414"/>' +
+      '<circle cx="320" cy="320" r="40" fill="#fff"/></svg>');
+    const start = Date.now();
+    const demo = () => handleNowPlaying({
+      is_playing: true, song: 'Preview Track Name That Runs Long', artists: 'Sample Artist, Another Artist',
+      album_art: art, progress_ms: (Date.now() - start) % 180000, duration_ms: 180000 });
+    demo();
+    setInterval(demo, 5000);
+  } else {
+    connect();
+  }
 </script>
 </body>
 </html>
