@@ -13,7 +13,7 @@ OVERLAY_DIR = Path(__file__).resolve().parent.parent / "overlay"
 
 
 def serve_overlay(connection, request):
-    if request.path == "/nowplaying":
+    if request.path.split("?", 1)[0] == "/nowplaying":   # path carries the query string
         html_path = OVERLAY_DIR / "nowplaying.html"
         if html_path.exists():
             return Response(200, "OK", Headers({
